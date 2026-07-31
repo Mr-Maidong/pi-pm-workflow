@@ -20,19 +20,45 @@ Pi Package:产品经理(PM)工作流一体化包。包含三个扩展工具、�
 
 ## 安装
 
-```bash
-pi install /absolute/path/to/pm-workflow      # 全局
-# 或项目级
-pi install -l /absolute/path/to/pm-workflow
-```
-
-临时试用(仅当前运行):
+### 方式一:GitHub git 源(推荐,团队分发)
 
 ```bash
-pi -e /absolute/path/to/pm-workflow
+# 固定版本(推荐)
+pi install git:github.com/Mr-Maidong/pi-pm-workflow@v1.0.0
+# 跟随 main 最新
+pi install git:github.com/Mr-Maidong/pi-pm-workflow
 ```
 
-> **提示**:若全局 `~/.agents/skills/pm-prototype` 已存在同名技能,可与包内技能并存;只需保留其一,建议移除全局副本以免技能列表重复。
+### 方式二:本地路径(开发模式)
+
+```bash
+pi install D:/Workbase/pi-packages/pi-pm-workflow        # 全局
+pi install -l D:/Workbase/pi-packages/pi-pm-workflow     # 项目级
+```
+
+### 临时试用(仅当前运行)
+
+```bash
+pi -e git:github.com/Mr-Maidong/pi-pm-workflow
+```
+
+## 技能冲突说明(多 agent 共用场景)
+
+`~/.agents/skills/` 是 Agent Skills 标准目录,**Claude Code / Codex 等多个 agent 共用**,请勿删除其中的 `pm-prototype`。若目标机器已有全局同名技能,在 settings.json 中对本包做技能过滤,避免 Pi 侧同名冲突:
+
+```json
+{
+  "packages": [
+    {
+      "source": "git:github.com/Mr-Maidong/pi-pm-workflow@v1.0.0",
+      "skills": ["!skills/pm-prototype"]
+    }
+  ]
+}
+```
+
+- 效果:Pi 与所有 agent 统一使用全局技能,包内技能被显式排除,无冲突警告
+- 全新环境(无全局技能):去掉 `"skills"` 过滤行即可使用包内技能(包自包含)
 
 ## 使用
 
@@ -73,6 +99,28 @@ main ● 1.2k ↓300 $0.012       DeepSeek V4 Flash  ██████░░░
 
 - 进度条颜色:绿(<60%)→ 黄(60-84%)→ 红(≥85%)
 - `/statusline` 命令切换启用/停用
+
+## 维护约定(多 agent 共用环境)
+
+- **权威版本 = 全局** `~/.agents/skills/pm-prototype`(Claude Code 等 agent 共用)
+- 修改技能流程:改全局 → 同步到包内:
+
+```bash
+cp -r ~/.agents/skills/pm-prototype/* D:/Workbase/pi-packages/pi-pm-workflow/skills/pm-prototype/
+```
+
+- 修改扩展:直接改包内 `extensions/*.ts`(Pi 侧唯一来源,无共享副本)
+
+## 开发迭代(发布新版本)
+
+```bash
+cd D:/Workbase/pi-packages/pi-pm-workflow
+git add -A && git commit -m "feat: ..."
+git push origin main
+pi update --all                # 本地更新到最新
+# 发布新 tag(可选,固定版本用户需同步升级)
+git tag v1.1.0 && git push origin v1.1.0
+```
 
 ## 说明
 
