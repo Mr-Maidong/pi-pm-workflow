@@ -25,6 +25,17 @@ type ThemeColor = "accent" | "success" | "warning" | "error" | "muted" | "dim";
 const BAR_WIDTH = 10;
 const STATUS_KEY = "context-statusline";
 
+/**
+ * 进度条语义色(真彩 ANSI,不依赖主题):
+ * dark 主题的 success 映射为 #b5bd68(黄绿),视觉上接近黄色,故此处直接使用标准绿/橙/红。
+ */
+const BAR_PALETTE: Record<"success" | "warning" | "error", string> = {
+	success: "\x1b[38;2;86;200;90m", // 纯绿 #56c85a
+	warning: "\x1b[38;2;255;170;40m", // 橙黄 #ffaa28
+	error: "\x1b[38;2;244;67;54m", // 红 #f44336
+};
+const RESET_FG = "\x1b[39m";
+
 export default function (pi: ExtensionAPI) {
 	let enabled = true;
 	// 保存当前 session 的 ctx 与渲染触发器，供事件回调强制刷新 footer
@@ -90,8 +101,9 @@ export default function (pi: ExtensionAPI) {
 					if (usage && usage.percent != null) {
 						const pct = Math.round(usage.percent);
 						const color = barColor(pct);
-						const bar = theme.fg(color, makeBar(pct));
-						const pctText = theme.fg(color, theme.bold(`${pct}%`));
+						const ansi = BAR_PALETTE[color as "success" | "warning" | "error"];
+						const bar = ansi + makeBar(pct) + RESET_FG;
+						const pctText = ansi + theme.bold(`${pct}%`) + RESET_FG;
 						const tokens =
 							usage.tokens != null
 								? theme.fg("dim", ` (${fmt(usage.tokens)}/${fmt(usage.contextWindow)})`)
