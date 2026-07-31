@@ -1,0 +1,100 @@
+---
+name: pm-prototype
+description: 帮助产品经理将需求快速转化为可交互的前端产品原型(Vue 3 + Vite)。先通过 grill-with-docs 澄清并确认需求,再进行纯前端原型开发——不实现真实接口和前后端交互,全部使用 mock 数据;每个功能模块右上角带角标,点击可查看该模块的产品说明。当用户提出"做原型"、"产品原型"、"需求转原型"、"prototype 一个产品/功能"等请求时使用。
+argument-hint: <需求描述>
+---
+
+# PM 原型开发
+
+## Overview
+
+将产品经理的需求输入转化为可在浏览器中演示的高保真交互原型。原型仅用于展示产品形态与交互流程,不包含真实后端;每个模块内嵌产品说明,点击角标即可查看,便于评审与交接。
+
+## 工作流程
+
+严格按以下四个阶段执行,**不得跳过阶段一直接写代码**。
+
+### 阶段一:需求澄清(优先使用 grill-with-docs)
+
+1. 对用户输入的需求进行深挖:目标用户、核心场景、页面/模块划分、关键交互、数据展示内容、边界情况。按以下优先级选择方式:
+   - 可用技能列表中存在 `grill-with-docs` → 用 `Skill` 工具调用它;
+   - 否则存在 `grilling` → 调用 `grilling`;
+   - 都不存在 → 直接向用户分轮提问上述维度,每轮不超过 4 个问题,直到需求足够清晰。
+
+   **提问呈现方式(重要)**:在 Pi 环境(TUI)下,优先调用 `question` / `questionnaire` 工具(来自 pm-workflow 包)向用户提问:
+   - 每个问题必须附上**编号选项**(如 `1. 单行布局` `2. 两行布局` `3. Type something.`),让用户键盘选择或自由输入;
+   - `question` 用于单个问题,`questionnaire` 用于一次多问题(tab 切换);
+   - 若 `question`/`questionnaire` 工具不可用、或处于非交互模式(工具返回 UI not available),则回退为在回复中直接列出编号选项的纯文本问题。
+2. 澄清结束后,整理输出一份**模块清单**,每个模块包含:
+   - `id`:模块唯一标识(hyphen-case)
+   - `名称`:模块中文名
+   - `产品说明`:分节描述——模块目标、交互说明、数据说明、边界与备注
+
+   > **数据说明**只描述产品层面的数据:展示哪些字段、排序/分页规则、数据来源(如"来自订单系统")。**禁止**出现 mock、模拟、假数据等实现细节——产品设计不关心数据怎么来的,那是阶段三的开发约束。
+
+   同时生成一份 `modules.json`(阶段二脚手架脚本的输入),格式固定:
+
+   ```json
+   {
+     "productName": "产品中文名",
+     "modules": [
+       {
+         "id": "order-list",
+         "name": "订单列表",
+         "goal": "模块目标(与确认版一字不差)",
+         "interaction": "交互说明",
+         "data": "数据说明",
+         "notes": "边界与备注"
+       }
+     ]
+   }
+   ```
+
+   四个说明字段均可选,但内容必须与用户确认版完全一致,不得改写。
+3. 将模块清单展示给用户,**明确获得用户确认后**才进入阶段二。用户要求修改时,更新清单并再次确认。
+
+### 阶段二:项目脚手架
+
+1. 询问或确认原型输出目录(默认在当前目录下新建 `<产品名>-prototype/`)。
+2. 创建 Vue 3 + Vite 项目:`npm create vite@latest <dir> -- --template vue`,然后 `npm install && npm i vue-router`。
+3. 将阶段一生成的 `modules.json` 保存到原型目录,运行脚手架脚本:
+
+   ```bash
+   node <skill-dir>/scripts/scaffold.cjs modules.json <dir>
+   ```
+
+   脚本自动完成:复制 ModuleSpec.vue、生成 specs.js(内容与确认版一致)、生成各模块 mock 骨架与 view 占位、配置 router 和 App.vue 导航。
+
+   **已有项目**:脚本检测到 App.vue / main.js / router / specs.js / ModuleSpec.vue 已存在时会跳过并输出合并片段,**绝不覆盖**。此时需根据脚本输出,将路由、导航、specs 条目手动合并到现有文件中,保持原有结构不变。
+4. 检查脚本输出,确认 specs.js 内容与用户确认版逐字一致;如有偏差或跳过合并,以确认版为准修正后再继续。
+
+### 阶段三:原型开发
+
+开发约束(必须遵守):
+
+- **纯前端**:禁止调用真实接口。不引入 axios,不写 fetch 请求真实地址。所有数据来自 `src/mocks/` 下的 mock 模块。
+- **模拟交互**:提交、加载、删除等操作用本地状态 + `setTimeout` 模拟延迟与反馈(loading、toast、成功态),让原型"看起来真的能用"。
+- **模块角标**:每个功能模块必须用 `ModuleSpec` 组件包裹,传入 `title` 和 `specs.js` 中对应的说明,角标自动出现在模块右上角,点击弹出产品说明面板。示例:
+
+  ```vue
+  <ModuleSpec title="订单列表" :spec="specs['order-list']">
+    <OrderList />
+  </ModuleSpec>
+  ```
+
+- **视觉质量**:原型面向评审演示,界面需完整、美观、响应式,填充真实感的 mock 数据(真实的中文姓名、金额、日期,而非 "test1/test2")。
+- **多页面**:页面超过一个时使用 vue-router,并提供导航入口。
+
+### 阶段四:验证与交付
+
+1. 启动 dev server(`npm run dev`),在浏览器中逐页验证:
+   - 每个模块角标可见、点击能正确弹出对应产品说明;
+   - 核心交互流程可完整走通(含模拟的加载/成功反馈)。
+2. 向用户交付:访问地址、模块清单与说明的对应关系、如何演示。
+
+## Resources
+
+- `assets/ModuleSpec.vue`:模块包裹组件,渲染右上角角标与产品说明弹层(支持 Escape 关闭),由脚手架脚本自动复制。
+- `assets/specs.example.js`:`src/specs.js` 的数据结构示例(脚手架脚本自动生成,无需手动参照)。
+- `assets/mock.example.js`:`src/mocks/` 下 mock 模块的编写范例(分页、搜索、筛选、删除均用 setTimeout 模拟),实现 mock 时参照此结构。
+- `scripts/scaffold.cjs`:脚手架脚本,读取 `modules.json` 自动生成 specs.js、mock 骨架、view 占位、router 和 App.vue。阶段二第 3 步调用。
