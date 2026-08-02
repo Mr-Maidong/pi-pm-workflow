@@ -1,6 +1,6 @@
 # pm-workflow
 
-Pi Package:产品经理(PM)工作流一体化包。包含三个扩展工具、一个自定义状态栏扩展,以及 pm-prototype 原型开发技能。
+Pi Package: 产品经理(PM)工作流一体化包。包含三个扩展工具、一个自定义状态栏扩展，以及 PM 原型开发流程和通用系统附加提示词。
 
 ## 包含内容
 
@@ -103,7 +103,8 @@ main ● 1.2k ↓300 $0.012       DeepSeek V4 Flash  ██████░░░
 ## 维护约定(多 agent 共用环境)
 
 - **权威版本 = 全局** `~/.agents/skills/pm-prototype`(Claude Code 等 agent 共用)
-- 修改技能流程:改全局 → 同步到包内:
+- `SYSPROMPT.md` 是本包的系统附加提示词源文件，由 `extensions/append-system-prompt.ts` 在每次 agent run 开始前注入
+- 修改 `pm-prototype` 技能流程:改全局 → 同步到包内:
 
 ```bash
 cp -r ~/.agents/skills/pm-prototype/* D:/Workbase/pi-packages/pi-pm-workflow/skills/pm-prototype/
