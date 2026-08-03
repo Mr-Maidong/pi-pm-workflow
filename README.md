@@ -103,9 +103,9 @@ main ● 1.2k ↓300 $0.012       DeepSeek V4 Flash  ██████░░░
 
 ### 3. 失败请求重试(retry-last-request)
 
-当模型请求失败并且 Pi 已回到空闲状态时,按 `Ctrl+Y` 重试最近一次失败请求:
+当模型请求失败且 Pi 回到空闲状态时,TUI 会提示 `Press Ctrl+Y to retry.`。按 `Ctrl+Y` 后会显示 `Retrying the last failed request`,并以隐藏的 custom message 重发原始请求,因此不会在 transcript 中再次打印用户问题:
 
-- 自动复用失败请求对应的最近一条用户消息
+- 自动复用失败请求对应的最近一条用户消息,但不会在 TUI 中重复显示该消息
 - 请求仍在执行时不会追加新请求
 - 最近一条模型消息不是 `stopReason: "error"` 时不会重试
 - 没有可重试请求时显示提示
