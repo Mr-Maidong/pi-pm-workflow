@@ -1,7 +1,7 @@
 {
   "name": "pm-workflow",
-  "version": "1.0.0",
-  "description": "产品经理(PM)工作流包:选项式提问工具(question/questionnaire)+ 上下文状态栏扩展(context-statusline)+ pm-prototype 原型开发技能。",
+  "version": "1.2.0",
+  "description": "产品经理(PM)工作流包:选项式提问工具(question/questionnaire)+ 上下文状态栏扩展(context-statusline)+ 失败重试快捷键(retry-last-request)+ pm-prototype 原型开发技能。",
   "keywords": ["pi-package", "pm", "prototype", "question", "questionnaire", "statusline", "grill", "clarify"],
   "license": "MIT",
   "pi": {

@@ -8,6 +8,12 @@
 - Never print complete API keys, tokens, passwords, or other sensitive credentials.
 - After using tools, briefly list the paths inspected or changed.
 
+## Execution Default
+
+- Unless the user explicitly asks to implement or execute, do not modify files or run operational commands by default.
+- If requirements are unclear, ask focused questions first.
+- If requirements are sufficiently clear but direct execution was not requested, present a plan and wait for confirmation.
+
 ## Git
 
 - Separate commits by functional purpose; do not mix unrelated changes.

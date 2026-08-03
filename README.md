@@ -1,6 +1,6 @@
 # pm-workflow
 
-Pi Package: 产品经理(PM)工作流一体化包。包含三个扩展工具、一个自定义状态栏扩展，以及 PM 原型开发流程和通用系统附加提示词。
+Pi Package: 产品经理(PM)工作流一体化包。包含三个扩展工具、状态栏、失败重试扩展，以及 PM 原型开发流程和通用系统附加提示词。
 
 ## 包含内容
 
@@ -11,6 +11,7 @@ Pi Package: 产品经理(PM)工作流一体化包。包含三个扩展工具、�
 | `question.ts` | 工具 `question` | 单个问题 + 编号选项(1. A 2. B 3. C ... N. Type something.),用户键盘选择或自由输入 |
 | `questionnaire.ts` | 工具 `questionnaire` | 一次多个问题,顶部 tab 切换,全部答完统一提交 |
 | `context-statusline.ts` | `/statusline` 命令 + 自定义 footer | 状态栏右侧显示模型名 + 上下文占用进度条 + 百分比,左侧显示工作目录 + git 分支;启动自动启用,`/statusline` 切换 |
+| `retry-last-request.ts` | `Ctrl+Y` 快捷键 | 模型请求失败且 Pi 空闲时,重新发送最近一次失败请求的用户消息;覆盖 Pi 默认的 `Ctrl+Y` yank 行为 |
 
 ### 技能(skills/)
 
@@ -100,10 +101,21 @@ main ● 1.2k ↓300 $0.012       DeepSeek V4 Flash  ██████░░░
 - 进度条颜色:绿(<60%)→ 黄(60-84%)→ 红(≥85%)
 - `/statusline` 命令切换启用/停用
 
+### 3. 失败请求重试(retry-last-request)
+
+当模型请求失败并且 Pi 已回到空闲状态时,按 `Ctrl+Y` 重试最近一次失败请求:
+
+- 自动复用失败请求对应的最近一条用户消息
+- 请求仍在执行时不会追加新请求
+- 最近一条模型消息不是 `stopReason: "error"` 时不会重试
+- 没有可重试请求时显示提示
+- 该扩展覆盖 Pi 默认的 `Ctrl+Y` yank 快捷键
+
 ## 维护约定(多 agent 共用环境)
 
 - **权威版本 = 全局** `~/.agents/skills/pm-prototype`(Claude Code 等 agent 共用)
 - `SYSPROMPT.md` 是本包的系统附加提示词源文件，由 `extensions/append-system-prompt.ts` 在每次 agent run 开始前注入
+- `retry-last-request.ts` 使用 `before_agent_start` 之外的快捷键 API,仅在用户手动按键时触发重试，不会自动循环重试
 - 修改 `pm-prototype` 技能流程:改全局 → 同步到包内:
 
 ```bash
@@ -125,5 +137,6 @@ git tag v1.1.0 && git push origin v1.1.0
 
 ## 说明
 
-- question/questionnaire 源码源自 pi 官方示例(`examples/extensions/`),context-statusline 为用户自建扩展,均未改动逻辑,仅打包分发。
+- question/questionnaire 源码源自 pi 官方示例(`examples/extensions/`),context-statusline 和 retry-last-request 为用户自建扩展。
+- `append-system-prompt.ts` 读取包内 `SYSPROMPT.md`,通过 `before_agent_start` 追加到当前 system prompt。
 - 工具名 `question` / `questionnaire` 若与未来内置工具冲突,可通过包过滤或改名区分。
