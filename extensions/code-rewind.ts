@@ -39,7 +39,7 @@ export default function (pi: ExtensionAPI) {
 
 	const updateStatus = (ctx: ExtensionContext) => {
 		const count = uniqueCheckpointEntries(checkpointEntries(ctx.sessionManager.getBranch())).length;
-		ctx.ui.setStatus(STATUS_KEY, count > 0 ? `rewind ${count}` : undefined);
+		ctx.ui.setStatus(STATUS_KEY, count > 0 ? `Rewind ${count}` : undefined);
 	};
 
 	const initialize = async (ctx: ExtensionContext): Promise<void> => {

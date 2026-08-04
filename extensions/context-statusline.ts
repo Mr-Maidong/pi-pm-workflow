@@ -6,7 +6,7 @@
  *
  * 例如：  main  ● 1.2k ↓300 $0.012        Claude Sonnet 4.5  ██████░░░░ 58% (116k/200k)
  *
- * 左侧显示：当前工作目录（home 缩写为 ~） + git 分支（首字母大写、accent 色） + 其它扩展 setStatus() 状态。
+ * 左侧显示：当前目录末级名称 + Git 分支（首字母大写、accent 色）+ 未提交行数 + 其它扩展 setStatus() 状态。
  *
  * 数据来源：
  *   - ctx.model.name / ctx.model.id          模型名称
@@ -37,11 +37,26 @@ const BAR_PALETTE: Record<"success" | "warning" | "error", string> = {
 };
 const RESET_FG = "\x1b[39m";
 
+function formatGitChangeSummary(numstat: string): string {
+	let additions = 0;
+	let deletions = 0;
+	for (const line of numstat.split("\n")) {
+		const [added, deleted] = line.split("\t");
+		const addedLines = Number.parseInt(added, 10);
+		const deletedLines = Number.parseInt(deleted, 10);
+		if (Number.isFinite(addedLines)) additions += addedLines;
+		if (Number.isFinite(deletedLines)) deletions += deletedLines;
+	}
+	return additions || deletions ? `+${additions}/-${deletions}` : "";
+}
+
 export default function (pi: ExtensionAPI) {
 	let enabled = true;
-	// 保存当前 session 的 ctx 与渲染触发器，供事件回调强制刷新 footer
+	// 保存当前 session 的 ctx 与渲染触发器，供事件回调强制刷新 footer。
 	let activeCtx: ExtensionContext | undefined;
 	let requestRender: (() => void) | undefined;
+	let gitChangeSummary = "";
+	let gitChangeRefreshInFlight = false;
 
 	/** 数字格式化：< 1000 原样，否则用 k 表示 */
 	const fmt = (n: number): string => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
@@ -60,15 +75,43 @@ export default function (pi: ExtensionAPI) {
 		return "█".repeat(filled) + "░".repeat(BAR_WIDTH - filled);
 	};
 
+	const refreshGitChangeSummary = async (ctx: ExtensionContext): Promise<void> => {
+		if (gitChangeRefreshInFlight) return;
+		gitChangeRefreshInFlight = true;
+		try {
+			const result = await pi.exec("git", ["diff", "--numstat", "HEAD"], { cwd: ctx.cwd, timeout: 2_000 });
+			const nextSummary = result.code === 0 ? formatGitChangeSummary(result.stdout) : "";
+			if (nextSummary !== gitChangeSummary) {
+				gitChangeSummary = nextSummary;
+				requestRender?.();
+			}
+		} catch {
+			if (gitChangeSummary) {
+				gitChangeSummary = "";
+				requestRender?.();
+			}
+		} finally {
+			gitChangeRefreshInFlight = false;
+		}
+	};
+
 	/** 安装自定义 footer */
 	const installFooter = (ctx: ExtensionContext) => {
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			requestRender = () => tui.requestRender();
-			const unsubBranch = footerData.onBranchChange(() => tui.requestRender());
+			const unsubBranch = footerData.onBranchChange(() => {
+				void refreshGitChangeSummary(ctx);
+				tui.requestRender();
+			});
+			const gitChangeTimer = setInterval(() => void refreshGitChangeSummary(ctx), 3_000);
 
 			return {
 				invalidate() {},
-				dispose: unsubBranch,
+				dispose: () => {
+					clearInterval(gitChangeTimer);
+					unsubBranch();
+				},
+
 				render(width: number): string[] {
 					// ---- 左侧：当前工作目录 + git 分支 + 其它扩展状态 ----
 					const leftParts: string[] = [];
@@ -84,9 +127,12 @@ export default function (pi: ExtensionAPI) {
 					}
 					const branch = footerData.getGitBranch();
 					if (branch) {
-						// 首字母大写，并用 accent 颜色显示
+						// 首字母大写，并用 accent 色显示；未提交行数按新增/删除显示。
 						const capitalized = branch.charAt(0).toUpperCase() + branch.slice(1);
-						leftParts.push(theme.fg("accent", capitalized));
+						const changes = gitChangeSummary
+							? ` ${theme.fg("success", gitChangeSummary.split("/")[0])}${theme.fg("dim", "/")}${theme.fg("error", gitChangeSummary.split("/")[1])}`
+							: "";
+						leftParts.push(`${theme.fg("accent", capitalized)}${changes}`);
 					}
 					const left = leftParts.join(theme.fg("dim", " │ "));
 
@@ -125,6 +171,7 @@ export default function (pi: ExtensionAPI) {
 	// 启动时自动启用
 	pi.on("session_start", async (_event, ctx) => {
 		activeCtx = ctx;
+		await refreshGitChangeSummary(ctx);
 		if (enabled) installFooter(ctx);
 	});
 
@@ -133,7 +180,10 @@ export default function (pi: ExtensionAPI) {
 		activeCtx = ctx;
 		refresh();
 	});
-	pi.on("turn_end", async () => refresh());
+	pi.on("turn_end", async (_event, ctx) => {
+		refresh();
+		void refreshGitChangeSummary(ctx);
+	});
 	pi.on("message_end", async () => refresh());
 	pi.on("session_compact", async () => refresh());
 
