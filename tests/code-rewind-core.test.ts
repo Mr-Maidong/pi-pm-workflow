@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,6 +12,8 @@ import {
 	saveManifestBlobs,
 	scanSourceFiles,
 } from "../lib/code-rewind-core.js";
+
+const run = promisify(execFile);
 
 async function main(): Promise<void> {
 	const root = await mkdtemp(join(tmpdir(), "code-rewind-test-"));
@@ -26,6 +30,9 @@ async function main(): Promise<void> {
 		await writeFile(join(root, "dist", "ignored.ts"), "ignored\n");
 		await writeFile(join(root, "asset.png"), "not source\n");
 		await writeFile(join(root, "src", "large.ts"), "x".repeat(64));
+		await writeFile(join(root, ".gitignore"), "src/ignored.ts\n");
+		await writeFile(join(root, "src", "ignored.ts"), "ignored by gitignore\n");
+		await run("git", ["init", "--quiet"], { cwd: root });
 
 		const initial = await scanSourceFiles(root, config);
 		assert.deepEqual(Object.keys(initial).sort(), ["src/deleted.py", "src/kept.ts", "src/large.ts"]);

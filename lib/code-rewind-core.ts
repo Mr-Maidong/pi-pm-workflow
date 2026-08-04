@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 
 export const CHECKPOINT_TYPE = "code-rewind-checkpoint";
@@ -74,6 +75,7 @@ export async function loadConfig(root: string): Promise<ResolvedCodeRewindConfig
 export async function scanSourceFiles(root: string, config: ResolvedCodeRewindConfig): Promise<SourceManifest> {
 	const manifest: SourceManifest = {};
 	const rootPath = resolve(root);
+	const candidates: Array<{ path: string; fullPath: string }> = [];
 
 	const visit = async (directory: string): Promise<void> => {
 		const entries = await readdir(directory, { withFileTypes: true });
@@ -87,19 +89,23 @@ export async function scanSourceFiles(root: string, config: ResolvedCodeRewindCo
 				continue;
 			}
 			if (!entry.isFile() || !isEligibleSourcePath(path, config)) continue;
-
-			const fileStat = await stat(fullPath);
-			if (fileStat.size > config.maxFileSize) continue;
-			const content = await readFile(fullPath);
-			manifest[path] = {
-				exists: true,
-				blobHash: hashContent(content),
-				mode: fileStat.mode & 0o777,
-			};
+			candidates.push({ path, fullPath });
 		}
 	};
 
 	await visit(rootPath);
+	const ignoredPaths = await findGitIgnoredPaths(rootPath, candidates.map((candidate) => candidate.path));
+	for (const candidate of candidates) {
+		if (ignoredPaths.has(candidate.path)) continue;
+		const fileStat = await stat(candidate.fullPath);
+		if (fileStat.size > config.maxFileSize) continue;
+		const content = await readFile(candidate.fullPath);
+		manifest[candidate.path] = {
+			exists: true,
+			blobHash: hashContent(content),
+			mode: fileStat.mode & 0o777,
+		};
+	}
 	return manifest;
 }
 
@@ -207,6 +213,28 @@ export function isCodeCheckpoint(value: unknown): value is CodeCheckpoint {
 		&& (checkpoint.phase === "session-start" || checkpoint.phase === "after-agent")
 		&& typeof checkpoint.timestamp === "number"
 		&& checkpoint.files !== undefined;
+}
+
+async function findGitIgnoredPaths(root: string, paths: string[]): Promise<Set<string>> {
+	if (paths.length === 0) return new Set();
+	return new Promise((resolveIgnored) => {
+		const child = spawn("git", ["check-ignore", "--stdin", "-z", "--no-index"], {
+			cwd: root,
+			stdio: ["pipe", "pipe", "ignore"],
+		});
+		const chunks: Buffer[] = [];
+		child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+		child.on("error", () => resolveIgnored(new Set()));
+		child.on("close", (code) => {
+			if (code !== 0) {
+				resolveIgnored(new Set());
+				return;
+			}
+			const output = Buffer.concat(chunks).toString("utf8");
+			resolveIgnored(new Set(output.split("\0").filter(Boolean).map(normalizeRelativePath)));
+		});
+		child.stdin.end(`${paths.join("\0")}\0`);
+	});
 }
 
 export function resolveProjectPath(root: string, path: string): string {

@@ -25,7 +25,7 @@ Add a Pi extension that restores source-code files together with the selected co
 
 - [x] Add project-level `code-rewind.json` configuration for source extensions, include paths, exclude paths, and maximum file size.
 - [x] Define defaults for `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.py`, `.go`, `.rs`, `.java`, `.kt`, `.cs`, `.vue`, `.svelte`, `.astro`, `.css`, `.scss`, `.less`, `.html`, `.sql`, `.sh`.
-- [x] Exclude `.git`, `node_modules`, `.venv`, `venv`, `dist`, `build`, `coverage`, cache directories, and user-configured exclusions.
+- [x] Exclude `.git`, `node_modules`, `.venv`, `venv`, `dist`, `build`, `coverage`, cache directories, user-configured exclusions, and paths ignored by Git's ignore rules.
 - [x] Resolve and validate paths against the project root before reading, writing, or deleting them.
 
 ## Data Model

@@ -121,7 +121,7 @@ main ● 1.2k ↓300 $0.012       DeepSeek V4 Flash  ██████░░░
 - checkpoint 只从目标节点的祖先路径选择,不会按时间戳跨 sibling 分支猜测代码状态。
 - 非交互模式不执行代码恢复。
 
-默认只处理 `.ts`、`.tsx`、`.js`、`.jsx`、`.mjs`、`.cjs`、`.py`、`.go`、`.rs`、`.java`、`.kt`、`.cs`、`.vue`、`.svelte`、`.astro`、`.css`、`.scss`、`.less`、`.html`、`.sql`、`.sh`,并排除 `.git`、`node_modules`、`.venv`、`dist`、`build`、`coverage` 与常见缓存目录。单文件默认上限为 1 MiB。
+默认只处理 `.ts`、`.tsx`、`.js`、`.jsx`、`.mjs`、`.cjs`、`.py`、`.go`、`.rs`、`.java`、`.kt`、`.cs`、`.vue`、`.svelte`、`.astro`、`.css`、`.scss`、`.less`、`.html`、`.sql`、`.sh`,并排除 `.git`、`node_modules`、`.venv`、`dist`、`build`、`coverage`、Git ignore 文件(`.gitignore`、`.git/info/exclude`) 与常见缓存目录。单文件默认上限为 1 MiB。
 
 在项目根目录创建可选的 `code-rewind.json` 调整规则;`include` 和 `exclude` 使用项目相对目录前缀:
 
