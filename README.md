@@ -12,6 +12,7 @@ Pi Package: 产品经理(PM)工作流一体化包。包含三个扩展工具、�
 | `questionnaire.ts` | 工具 `questionnaire` | 一次多个问题,顶部 tab 切换,全部答完统一提交 |
 | `context-statusline.ts` | `/statusline` 命令 + 自定义 footer | 状态栏右侧显示模型名 + 上下文占用进度条 + 百分比,左侧显示工作目录 + git 分支;启动自动启用,`/statusline` 切换 |
 | `retry-last-request.ts` | `Ctrl+Y` 快捷键 | 模型请求失败且 Pi 空闲时,重新发送最近一次失败请求的用户消息;覆盖 Pi 默认的 `Ctrl+Y` yank 行为 |
+| `code-rewind.ts` | `/rewind` + `/tree` 恢复提示 | 为源码文件保存会话树绑定的快照,在切换历史对话点时可选择同步恢复代码 |
 
 ### 技能(skills/)
 
@@ -110,6 +111,28 @@ main ● 1.2k ↓300 $0.012       DeepSeek V4 Flash  ██████░░░
 - 最近一条模型消息不是 `stopReason: "error"` 时不会重试
 - 没有可重试请求时显示提示
 - 该扩展覆盖 Pi 默认的 `Ctrl+Y` yank 快捷键
+
+### 4. 源码回退(code-rewind)
+
+扩展在 session 启动时和每个 agent 回合完成后扫描受支持的源码文件。它不依赖 Git,不会修改 Git history、index 或分支;内容 blob 保存在 Pi session 目录的 `code-rewind/<session-id>/blobs` 下,因此复制或导出 session 时需要一并保留该目录。
+
+- 双击 `Esc` 保留 Pi 默认的 `/tree` 导航;选定历史对话点后,扩展会列出有差异的源码文件,可选择恢复、保持当前代码或取消导航。
+- `/rewind` 可选择当前会话分支的 checkpoint,并选择恢复对话与代码、仅代码或仅对话;最近一次成功恢复可 redo。
+- checkpoint 只从目标节点的祖先路径选择,不会按时间戳跨 sibling 分支猜测代码状态。
+- 非交互模式不执行代码恢复。
+
+默认只处理 `.ts`、`.tsx`、`.js`、`.jsx`、`.mjs`、`.cjs`、`.py`、`.go`、`.rs`、`.java`、`.kt`、`.cs`、`.vue`、`.svelte`、`.astro`、`.css`、`.scss`、`.less`、`.html`、`.sql`、`.sh`,并排除 `.git`、`node_modules`、`.venv`、`dist`、`build`、`coverage` 与常见缓存目录。单文件默认上限为 1 MiB。
+
+在项目根目录创建可选的 `code-rewind.json` 调整规则;`include` 和 `exclude` 使用项目相对目录前缀:
+
+```json
+{
+  "include": ["src", "packages/app"],
+  "exclude": ["src/generated"],
+  "extensions": [".ts", ".tsx", ".vue"],
+  "maxFileSize": 1048576
+}
+```
 
 ## 维护约定(多 agent 共用环境)
 
