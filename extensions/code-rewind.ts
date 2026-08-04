@@ -24,6 +24,8 @@ const KEEP_CODE = "Keep current source files";
 const CANCEL_NAVIGATION = "Cancel navigation";
 
 type CheckpointEntry = { entry: CustomEntry<CodeCheckpoint>; checkpoint: CodeCheckpoint };
+type UserMessageEntry = Extract<SessionEntry, { type: "message" }>;
+type RewindTarget = { entry: UserMessageEntry; checkpoint?: CheckpointEntry };
 
 interface RewindState {
 	root?: string;
@@ -38,7 +40,7 @@ export default function (pi: ExtensionAPI) {
 	const state: RewindState = {};
 
 	const updateStatus = (ctx: ExtensionContext) => {
-		const count = uniqueCheckpointEntries(checkpointEntries(ctx.sessionManager.getBranch())).length;
+		const count = rewindTargets(ctx.sessionManager).length;
 		ctx.ui.setStatus(STATUS_KEY, count > 0 ? `Rewind ${count}` : undefined);
 	};
 
@@ -145,8 +147,8 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const checkpoints = uniqueCheckpointEntries(checkpointEntries(ctx.sessionManager.getBranch()));
-			const labels = checkpoints.map(({ entry, checkpoint }, index) => checkpointLabel(index, entry, checkpoint));
+			const targets = rewindTargets(ctx.sessionManager);
+			const labels = targets.map((target, index) => rewindTargetLabel(index, target));
 			if (state.redo) labels.unshift("Redo last source restore");
 			if (labels.length === 0) {
 				ctx.ui.notify("No code checkpoints are available", "warning");
@@ -162,34 +164,41 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const offset = state.redo ? 1 : 0;
-			const target = checkpoints[labels.indexOf(choice) - offset];
+			const target = targets[labels.indexOf(choice) - offset];
 			if (!target) return;
 
-			try {
-				const current = await scanSourceFiles(state.root, state.config);
-				const diff = diffManifests(current, target.checkpoint.files);
-				if (changedFileCount(diff) > 0) {
-					const proceed = await ctx.ui.confirm(
-						`Source files that would be restored:\n${formatDiffSummary(diff)}`,
-						"Continue to restore options?",
-					);
-					if (!proceed) return;
+			if (target.checkpoint) {
+				try {
+					const current = await scanSourceFiles(state.root, state.config);
+					const diff = diffManifests(current, target.checkpoint.checkpoint.files);
+					if (changedFileCount(diff) > 0) {
+						const proceed = await ctx.ui.confirm(
+							`Source files that would be restored:\n${formatDiffSummary(diff)}`,
+							"Continue to restore options?",
+						);
+						if (!proceed) return;
+					}
+				} catch (error) {
+					ctx.ui.notify(`Code rewind could not scan source files: ${errorMessage(error)}`, "error");
+					return;
 				}
-			} catch (error) {
-				ctx.ui.notify(`Code rewind could not scan source files: ${errorMessage(error)}`, "error");
-				return;
 			}
 
-			const mode = await ctx.ui.select("Rewind mode", [
-				"Restore conversation and source files",
-				"Restore source files only",
-				"Restore conversation only",
-				"Cancel",
-			]);
+			const mode = await ctx.ui.select(
+				"Rewind mode",
+				target.checkpoint
+					? [
+						"Restore conversation and source files",
+						"Restore source files only",
+						"Restore conversation only",
+						"Cancel",
+					]
+					: ["Restore conversation only", "Cancel"],
+			);
 			if (!mode || mode === "Cancel") return;
 
-			if (mode !== "Restore conversation only") {
-				const restored = await restoreCurrentManifest(state, ctx, target.checkpoint.files, "Source files restored");
+			if (target.checkpoint && mode !== "Restore conversation only") {
+				const restored = await restoreCurrentManifest(state, ctx, target.checkpoint.checkpoint.files, "Source files restored");
 				if (!restored) return;
 			}
 			if (mode !== "Restore source files only") {
@@ -254,21 +263,29 @@ async function restoreCurrentManifest(
 	}
 }
 
-function uniqueCheckpointEntries(entries: CheckpointEntry[]): CheckpointEntry[] {
-	const unique = new Map<string, CheckpointEntry>();
-	for (const checkpoint of entries) {
-		const key = manifestKey(checkpoint.checkpoint.files);
-		unique.delete(key);
-		unique.set(key, checkpoint);
-	}
-	return [...unique.values()];
+function rewindTargets(sessionManager: ExtensionContext["sessionManager"]): RewindTarget[] {
+	return sessionManager.getEntries().flatMap((entry) => {
+		if (entry.type !== "message" || entry.message.role !== "user") return [];
+		const checkpoint = entry.parentId
+			? findCheckpointForTarget(sessionManager, entry.parentId)
+			: undefined;
+		return [{ entry: entry as UserMessageEntry, checkpoint }];
+	});
 }
 
-function manifestKey(manifest: SourceManifest): string {
-	return JSON.stringify(Object.keys(manifest).sort().map((path) => {
-		const state = manifest[path];
-		return [path, state.exists, state.blobHash ?? "", state.mode ?? null];
-	}));
+function userMessageText(entry: UserMessageEntry): string {
+	const content = entry.message.content;
+	const text = typeof content === "string"
+		? content
+		: content.map((part) => part.type === "text" ? part.text : "[image]").join(" ");
+	return text.replace(/\s+/g, " ").trim();
+}
+
+function rewindTargetLabel(index: number, target: RewindTarget): string {
+	const time = new Date(target.entry.timestamp).toLocaleTimeString();
+	const prompt = userMessageText(target.entry);
+	const preview = prompt.length > 72 ? `${prompt.slice(0, 71)}…` : prompt;
+	return `#${index + 1} ${time} ${preview || "[empty message]"}`;
 }
 
 function checkpointEntries(entries: SessionEntry[]): CheckpointEntry[] {
@@ -283,12 +300,6 @@ function findCheckpointForTarget(
 	targetId: string,
 ): CheckpointEntry | undefined {
 	return checkpointEntries(sessionManager.getBranch(targetId)).at(-1);
-}
-
-function checkpointLabel(index: number, entry: CustomEntry<CodeCheckpoint>, checkpoint: CodeCheckpoint): string {
-	const time = new Date(checkpoint.timestamp).toLocaleTimeString();
-	const files = Object.keys(checkpoint.files).length;
-	return `#${index + 1} ${time} ${checkpoint.phase} (${files} source files) [${entry.id.slice(0, 6)}]`;
 }
 
 function errorMessage(error: unknown): string {

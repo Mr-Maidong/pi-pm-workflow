@@ -3,8 +3,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const RETRY_MESSAGE_TYPE = "retry-last-request";
 
 export default function (pi: ExtensionAPI) {
-	pi.on("message_end", async (event, ctx) => {
-		if (event.message.role === "assistant" && event.message.stopReason === "error") {
+	pi.on("agent_settled", async (_event, ctx) => {
+		const branch = ctx.sessionManager.getBranch();
+		const lastMessage = [...branch].reverse().find((entry) => entry.type === "message");
+		if (
+			lastMessage?.type === "message" &&
+			lastMessage.message.role === "assistant" &&
+			lastMessage.message.stopReason === "error"
+		) {
 			ctx.ui.notify("Model request failed. Press Ctrl+Y to retry.", "warning");
 		}
 	});
