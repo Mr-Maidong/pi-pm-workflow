@@ -17,6 +17,7 @@
  *   - /statusline 命令可切换 启用/停用（停用后恢复内置 footer）
  */
 
+import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
@@ -72,13 +73,10 @@ export default function (pi: ExtensionAPI) {
 					// ---- 左侧：当前工作目录 + git 分支 + 其它扩展状态 ----
 					const leftParts: string[] = [];
 
-					// 当前工作目录（home 目录缩写为 ~）
+					// 仅显示当前工作目录最后一级，并将首字母大写。
 					const cwd = ctx.sessionManager.getCwd();
-					const home = process.env.HOME || process.env.USERPROFILE || "";
-					let cwdDisplay = cwd;
-					if (home && (cwd === home || cwd.startsWith(home + "/") || cwd.startsWith(home + "\\"))) {
-						cwdDisplay = "~" + cwd.slice(home.length);
-					}
+					const directoryName = basename(cwd) || cwd;
+					const cwdDisplay = directoryName.charAt(0).toUpperCase() + directoryName.slice(1);
 					leftParts.push(theme.fg("muted", cwdDisplay));
 
 					for (const text of footerData.getExtensionStatuses().values()) {
