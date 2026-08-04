@@ -38,7 +38,7 @@ export default function (pi: ExtensionAPI) {
 	const state: RewindState = {};
 
 	const updateStatus = (ctx: ExtensionContext) => {
-		const count = checkpointEntries(ctx.sessionManager.getEntries()).length;
+		const count = uniqueCheckpointEntries(checkpointEntries(ctx.sessionManager.getBranch())).length;
 		ctx.ui.setStatus(STATUS_KEY, count > 0 ? `rewind ${count}` : undefined);
 	};
 
@@ -54,8 +54,12 @@ export default function (pi: ExtensionAPI) {
 		await mkdir(state.blobDirectory, { recursive: true });
 		state.baseline = await scanSourceFiles(state.root, state.config);
 
-		// A full baseline makes the first branch of a session restorable too.
-		await persistCheckpoint(pi, state, ctx, "session-start", state.baseline);
+		// Reloads can fire session_start repeatedly. Reuse an identical checkpoint
+		// instead of appending another session-start entry for unchanged code.
+		const latest = checkpointEntries(ctx.sessionManager.getBranch()).at(-1);
+		if (!latest || !manifestsEqual(latest.checkpoint.files, state.baseline)) {
+			await persistCheckpoint(pi, state, ctx, "session-start", state.baseline);
+		}
 		updateStatus(ctx);
 	};
 
@@ -84,6 +88,11 @@ export default function (pi: ExtensionAPI) {
 		if (!isReady(state)) return;
 		try {
 			const current = await scanSourceFiles(state.root, state.config);
+			const latest = checkpointEntries(ctx.sessionManager.getBranch()).at(-1);
+			if (latest && manifestsEqual(latest.checkpoint.files, current)) {
+				state.baseline = current;
+				return;
+			}
 			if (state.baseline && manifestsEqual(state.baseline, current)) return;
 			await persistCheckpoint(pi, state, ctx, "after-agent", current);
 			state.baseline = current;
@@ -136,7 +145,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const checkpoints = checkpointEntries(ctx.sessionManager.getBranch());
+			const checkpoints = uniqueCheckpointEntries(checkpointEntries(ctx.sessionManager.getBranch()));
 			const labels = checkpoints.map(({ entry, checkpoint }, index) => checkpointLabel(index, entry, checkpoint));
 			if (state.redo) labels.unshift("Redo last source restore");
 			if (labels.length === 0) {
@@ -243,6 +252,23 @@ async function restoreCurrentManifest(
 		ctx.ui.notify(`Source restore failed: ${errorMessage(error)}`, "error");
 		return false;
 	}
+}
+
+function uniqueCheckpointEntries(entries: CheckpointEntry[]): CheckpointEntry[] {
+	const unique = new Map<string, CheckpointEntry>();
+	for (const checkpoint of entries) {
+		const key = manifestKey(checkpoint.checkpoint.files);
+		unique.delete(key);
+		unique.set(key, checkpoint);
+	}
+	return [...unique.values()];
+}
+
+function manifestKey(manifest: SourceManifest): string {
+	return JSON.stringify(Object.keys(manifest).sort().map((path) => {
+		const state = manifest[path];
+		return [path, state.exists, state.blobHash ?? "", state.mode ?? null];
+	}));
 }
 
 function checkpointEntries(entries: SessionEntry[]): CheckpointEntry[] {
