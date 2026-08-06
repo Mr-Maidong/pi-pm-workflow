@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	diffManifests,
+	findFirstDescendant,
 	pruneOrphanedBlobs,
 	referencedBlobHashes,
 	resolveConfig,
@@ -81,6 +82,23 @@ async function main(): Promise<void> {
 		assert.equal(deleted, 1); // ccc.tmp 被跳过，aaa 被删，bbb 保留
 		const remaining = await readdir(blobsDir);
 		assert.deepEqual(remaining.sort(), ["bbb", "ccc.tmp"]);
+
+		// findFirstDescendant：检查点 cpN 挂在 userN 的 assistant 回复之下，
+		// 以 userN 为锚应找到 cpN（而非祖先路径上的 cp(N-1)）。
+		const mk = (id: string, parent: string | null) => ({ id, parentId: parent, type: "message", customType: undefined, data: undefined });
+		const tree = [
+			mk("user1", null),
+			mk("asst1", "user1"),
+			{ id: "cp1", parentId: "asst1", type: "custom", customType: "cp", data: {} },
+			mk("user2", "cp1"),
+			mk("asst2", "user2"),
+			{ id: "cp2", parentId: "asst2", type: "custom", customType: "cp", data: {} },
+		];
+		const isCp = (e: (typeof tree)[number]) => e.type === "custom" && e.customType === "cp";
+		assert.equal(findFirstDescendant(tree, "user1", isCp)?.id, "cp1");
+		assert.equal(findFirstDescendant(tree, "user2", isCp)?.id, "cp2"); // 不再提前一轮
+		assert.equal(findFirstDescendant(tree, "asst2", isCp)?.id, "cp2");
+		assert.equal(findFirstDescendant(tree, "user2", isCp, new Set(["cp2"]))?.id, undefined); // 已清理则不可回退
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

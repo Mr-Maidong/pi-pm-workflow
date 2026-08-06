@@ -159,6 +159,38 @@ export async function pruneOrphanedBlobs(blobDirectory: string, needed: Set<stri
 	return deleted;
 }
 
+export interface TreeRef {
+	id: string;
+	parentId: string | null;
+}
+
+/**
+ * 在按追加顺序排列的 entries 中，找到第一个以 targetId 为祖先的条目。
+ *
+ * 用于把会话中的检查点(通常挂在某轮 assistant 消息之下)对回到它所属的那一轮对话：
+ * 检查点 cpN 是 userN 的后代，因此从 userN 向下找第一个检查点即可得到 cpN，
+ * 而不是祖先路径上的 cp(N-1)。
+ */
+export function findFirstDescendant<T extends TreeRef>(
+	entries: readonly T[],
+	targetId: string,
+	isTarget: (entry: T) => boolean,
+	prunedIds?: ReadonlySet<string>,
+): T | undefined {
+	const parents = new Map<string, string | null>();
+	for (const entry of entries) parents.set(entry.id, entry.parentId);
+	for (const entry of entries) {
+		if (prunedIds?.has(entry.id)) continue;
+		if (!isTarget(entry)) continue;
+		let cursor = entry.parentId;
+		while (cursor) {
+			if (cursor === targetId) return entry;
+			cursor = parents.get(cursor) ?? null;
+		}
+	}
+	return undefined;
+}
+
 export function manifestsEqual(left: SourceManifest, right: SourceManifest): boolean {
 	const leftPaths = Object.keys(left).sort();
 	const rightPaths = Object.keys(right).sort();

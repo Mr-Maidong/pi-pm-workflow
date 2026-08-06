@@ -8,6 +8,7 @@ import {
 	type SourceManifest,
 	changedFileCount,
 	diffManifests,
+	findFirstDescendant,
 	formatDiffSummary,
 	isCodeCheckpoint,
 	loadConfig,
@@ -283,9 +284,9 @@ function rewindTargets(
 ): RewindTarget[] {
 	return sessionManager.getEntries().flatMap((entry) => {
 		if (entry.type !== "message" || entry.message.role !== "user") return [];
-		const checkpoint = entry.parentId
-			? findCheckpointForTarget(sessionManager, entry.parentId, pruned)
-			: undefined;
+		// 检查点 cpN 挂在 userN 的 assistant 回复之下，是 userN 的后代；
+		// 因此以用户消息自身为锚向下找第一个检查点，才能对应当前这一轮。
+		const checkpoint = findCheckpointForTarget(sessionManager, entry.id, pruned);
 		return [{ entry: entry as UserMessageEntry, checkpoint }];
 	});
 }
@@ -318,7 +319,15 @@ function findCheckpointForTarget(
 	targetId: string,
 	pruned?: Set<string>,
 ): CheckpointEntry | undefined {
-	return checkpointEntries(sessionManager.getBranch(targetId), pruned).at(-1);
+	if (!targetId) return undefined;
+	const found = findFirstDescendant(
+		sessionManager.getEntries(),
+		targetId,
+		(entry) => entry.type === "custom" && entry.customType === CHECKPOINT_TYPE && isCodeCheckpoint(entry.data),
+		pruned,
+	);
+	if (!found || found.type !== "custom") return undefined;
+	return { entry: found as CustomEntry<CodeCheckpoint>, checkpoint: found.data as CodeCheckpoint };
 }
 
 async function loadPruned(file: string): Promise<Set<string>> {
