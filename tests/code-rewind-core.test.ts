@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	diffManifests,
+	findBestCheckpoint,
 	findFirstDescendant,
 	pruneOrphanedBlobs,
 	referencedBlobHashes,
@@ -86,19 +87,52 @@ async function main(): Promise<void> {
 		// findFirstDescendant：检查点 cpN 挂在 userN 的 assistant 回复之下，
 		// 以 userN 为锚应找到 cpN（而非祖先路径上的 cp(N-1)）。
 		const mk = (id: string, parent: string | null) => ({ id, parentId: parent, type: "message", customType: undefined, data: undefined });
+		const cp = (id: string, parent: string) => ({ id, parentId: parent, type: "custom", customType: "cp", data: {} });
+		const isCp = (e: { type: string; customType?: string }) => e.type === "custom" && e.customType === "cp";
+
+		// 有 after-agent 检查点的线性会话：userN 应对齐 cpN（后代优先）
 		const tree = [
-			mk("user1", null),
+			cp("cs", "head"),
+			mk("user1", "cs"),
 			mk("asst1", "user1"),
-			{ id: "cp1", parentId: "asst1", type: "custom", customType: "cp", data: {} },
+			cp("cp1", "asst1"),
 			mk("user2", "cp1"),
 			mk("asst2", "user2"),
-			{ id: "cp2", parentId: "asst2", type: "custom", customType: "cp", data: {} },
+			cp("cp2", "asst2"),
 		];
-		const isCp = (e: (typeof tree)[number]) => e.type === "custom" && e.customType === "cp";
 		assert.equal(findFirstDescendant(tree, "user1", isCp)?.id, "cp1");
 		assert.equal(findFirstDescendant(tree, "user2", isCp)?.id, "cp2"); // 不再提前一轮
-		assert.equal(findFirstDescendant(tree, "asst2", isCp)?.id, "cp2");
-		assert.equal(findFirstDescendant(tree, "user2", isCp, new Set(["cp2"]))?.id, undefined); // 已清理则不可回退
+
+		// findBestCheckpoint：后代优先，找不到再回退祖先（session-start）
+		assert.equal(findBestCheckpoint(tree, "user1", isCp)?.id, "cp1");
+		assert.equal(findBestCheckpoint(tree, "user2", isCp)?.id, "cp2");
+		assert.equal(findBestCheckpoint(tree, "asst2", isCp)?.id, "cp2");
+		assert.equal(findBestCheckpoint(tree, "user2", isCp, new Set(["cp2"]))?.id, "cp1"); // 后代已清理→回退到 cp1
+
+		// 仅有 session-start 检查点（无 after-agent）：回退到 cs，仍可恢复源码
+		const onlyStart = [
+			cp("cs", "head"),
+			mk("user1", "cs"),
+			mk("asst1", "user1"),
+			mk("user2", "asst1"),
+			mk("asst2", "user2"),
+		];
+		assert.equal(findBestCheckpoint(onlyStart, "user1", isCp)?.id, "cs");
+		assert.equal(findBestCheckpoint(onlyStart, "user2", isCp)?.id, "cs");
+
+		// 混合：cp1 存在、cp2 缺失（该轮未改代码）→ user3 回退到 cp1
+		const mixed = [
+			cp("cs", "head"),
+			mk("user1", "cs"),
+			mk("asst1", "user1"),
+			cp("cp1", "asst1"),
+			mk("user2", "cp1"),
+			mk("asst2", "user2"),
+			mk("user3", "asst2"),
+			mk("asst3", "user3"),
+		];
+		assert.equal(findBestCheckpoint(mixed, "user1", isCp)?.id, "cp1");
+		assert.equal(findBestCheckpoint(mixed, "user3", isCp)?.id, "cp1");
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

@@ -8,7 +8,7 @@ import {
 	type SourceManifest,
 	changedFileCount,
 	diffManifests,
-	findFirstDescendant,
+	findBestCheckpoint,
 	formatDiffSummary,
 	isCodeCheckpoint,
 	loadConfig,
@@ -320,7 +320,7 @@ function findCheckpointForTarget(
 	pruned?: Set<string>,
 ): CheckpointEntry | undefined {
 	if (!targetId) return undefined;
-	const found = findFirstDescendant(
+	const found = findBestCheckpoint(
 		sessionManager.getEntries(),
 		targetId,
 		(entry) => entry.type === "custom" && entry.customType === CHECKPOINT_TYPE && isCodeCheckpoint(entry.data),

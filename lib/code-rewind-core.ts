@@ -191,6 +191,36 @@ export function findFirstDescendant<T extends TreeRef>(
 	return undefined;
 }
 
+/**
+ * 为某个对话点找到最合适的检查点：
+ *  1. 优先返回该对话点的后代检查点（after-agent 检查点挂在 assistant 回复之下，
+ *     对应当前这一轮的代码状态，避免与上一轮错位）。
+ *  2. 若没有（例如该轮未改代码、或仅有 session-start 检查点），回退到祖先路径上
+ *     最近的一个检查点（session-start 或更早一轮）。
+ *
+ * sessions 中检查点有两种摆放：session-start 在第一个用户消息之前（是对话点的祖先），
+ * after-agent 在 assistant 回复之后（是对话点的后代），因此必须同时处理两个方向。
+ */
+export function findBestCheckpoint<T extends TreeRef>(
+	entries: readonly T[],
+	targetId: string,
+	isTarget: (entry: T) => boolean,
+	prunedIds?: ReadonlySet<string>,
+): T | undefined {
+	const descendant = findFirstDescendant(entries, targetId, isTarget, prunedIds);
+	if (descendant) return descendant;
+
+	const byId = new Map<string, T>();
+	for (const entry of entries) byId.set(entry.id, entry);
+	let cursor: string | null = targetId;
+	while (cursor) {
+		const entry = byId.get(cursor);
+		if (entry && isTarget(entry) && !prunedIds?.has(entry.id)) return entry;
+		cursor = entry?.parentId ?? null;
+	}
+	return undefined;
+}
+
 export function manifestsEqual(left: SourceManifest, right: SourceManifest): boolean {
 	const leftPaths = Object.keys(left).sort();
 	const rightPaths = Object.keys(right).sort();
