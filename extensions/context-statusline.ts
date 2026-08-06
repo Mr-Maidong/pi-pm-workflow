@@ -160,7 +160,8 @@ export default function (pi: ExtensionAPI) {
 					// ---- 左右对齐拼接 ----
 					const gap = Math.max(2, width - visibleWidth(left) - visibleWidth(right));
 					const line = left + " ".repeat(gap) + right;
-					return [truncateToWidth(line, width)];
+					// 末尾追加一个空行作为下边距,避免状态栏过于贴近终端底部。
+					return [truncateToWidth(line, width), ""];
 				},
 			};
 		});
