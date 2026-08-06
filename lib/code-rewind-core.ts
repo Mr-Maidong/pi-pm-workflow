@@ -6,6 +6,9 @@ import { dirname, extname, join, relative, resolve, sep } from "node:path";
 export const CHECKPOINT_TYPE = "code-rewind-checkpoint";
 export const CHECKPOINT_VERSION = 1;
 
+/** 默认保留的最近检查点数量；超过后自动清理更旧的检查点及其 blob 快照。 */
+export const DEFAULT_RETENTION = 30;
+
 const DEFAULT_EXTENSIONS = [
 	".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs",
 	".java", ".kt", ".cs", ".vue", ".svelte", ".astro", ".css", ".scss",
@@ -22,6 +25,8 @@ export interface CodeRewindConfig {
 	exclude?: string[];
 	extensions?: string[];
 	maxFileSize?: number;
+	/** 保留的最近检查点数量，超过后自动清理更旧的检查点及其 blob 快照（默认 30）。 */
+	retention?: number;
 }
 
 export interface ResolvedCodeRewindConfig {
@@ -29,6 +34,7 @@ export interface ResolvedCodeRewindConfig {
 	exclude: string[];
 	extensions: Set<string>;
 	maxFileSize: number;
+	retention: number;
 }
 
 export interface SourceFileState {
@@ -59,6 +65,7 @@ export function resolveConfig(config: CodeRewindConfig = {}): ResolvedCodeRewind
 		exclude: config.exclude?.map(normalizeRelativePath) ?? [],
 		extensions: new Set((config.extensions ?? DEFAULT_EXTENSIONS).map((extension) => extension.toLowerCase())),
 		maxFileSize: config.maxFileSize ?? 1024 * 1024,
+		retention: Math.max(1, Math.floor(config.retention ?? DEFAULT_RETENTION)),
 	};
 }
 
@@ -120,6 +127,36 @@ export async function saveManifestBlobs(root: string, blobDirectory: string, man
 		}
 		await writeBlob(blobDirectory, state.blobHash, content);
 	}
+}
+
+/** 收集一组 manifest 中所有引用的 blob hash（用于判断哪些 blob 仍需保留）。 */
+export function referencedBlobHashes(manifests: SourceManifest[]): Set<string> {
+	const hashes = new Set<string>();
+	for (const manifest of manifests) {
+		for (const state of Object.values(manifest)) {
+			if (state.exists && state.blobHash) hashes.add(state.blobHash);
+		}
+	}
+	return hashes;
+}
+
+/** 删除 blob 目录中不再被任何保留 manifest 引用的孤儿 blob，返回删除数量。 */
+export async function pruneOrphanedBlobs(blobDirectory: string, needed: Set<string>): Promise<number> {
+	let names: string[];
+	try {
+		names = await readdir(blobDirectory);
+	} catch (error) {
+		if (isMissingFileError(error)) return 0;
+		throw error;
+	}
+	let deleted = 0;
+	for (const name of names) {
+		if (name.endsWith(".tmp")) continue; // 跳过 atomicWrite 的临时文件
+		if (needed.has(name)) continue;
+		await rm(join(blobDirectory, name), { force: true });
+		deleted++;
+	}
+	return deleted;
 }
 
 export function manifestsEqual(left: SourceManifest, right: SourceManifest): boolean {

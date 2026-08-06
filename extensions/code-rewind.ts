@@ -1,5 +1,5 @@
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CustomEntry, SessionEntry } from "@earendil-works/pi-coding-agent/dist/core/session-manager.js";
 import {
@@ -12,6 +12,8 @@ import {
 	isCodeCheckpoint,
 	loadConfig,
 	manifestsEqual,
+	pruneOrphanedBlobs,
+	referencedBlobHashes,
 	restoreManifest,
 	saveManifestBlobs,
 	scanSourceFiles,
@@ -34,33 +36,40 @@ interface RewindState {
 	baseline?: SourceManifest;
 	redo?: SourceManifest;
 	skipTreeRestoreFor?: string;
+	/** 已被清理、不再可回退的检查点 entry id 集合（持久化到 pruned.json）。 */
+	pruned?: Set<string>;
+	prunedFile?: string;
 }
 
 export default function (pi: ExtensionAPI) {
 	const state: RewindState = {};
 
 	const updateStatus = (ctx: ExtensionContext) => {
-		const count = rewindTargets(ctx.sessionManager).length;
+		const count = rewindTargets(ctx.sessionManager, state.pruned).length;
 		ctx.ui.setStatus(STATUS_KEY, count > 0 ? `Rewind ${count}` : undefined);
 	};
 
 	const initialize = async (ctx: ExtensionContext): Promise<void> => {
 		state.root = ctx.cwd;
 		state.config = await loadConfig(ctx.cwd);
-		state.blobDirectory = join(
+		const blobDirectory = join(
 			ctx.sessionManager.getSessionDir(),
 			"code-rewind",
 			ctx.sessionManager.getSessionId(),
 			"blobs",
 		);
-		await mkdir(state.blobDirectory, { recursive: true });
+		state.blobDirectory = blobDirectory;
+		await mkdir(blobDirectory, { recursive: true });
+		const prunedFile = join(dirname(blobDirectory), "pruned.json");
+		state.prunedFile = prunedFile;
+		state.pruned = await loadPruned(prunedFile);
 		state.baseline = await scanSourceFiles(state.root, state.config);
 
 		// Reloads can fire session_start repeatedly. Reuse an identical checkpoint
 		// instead of appending another session-start entry for unchanged code.
-		const latest = checkpointEntries(ctx.sessionManager.getBranch()).at(-1);
+		const latest = checkpointEntries(ctx.sessionManager.getBranch(), state.pruned).at(-1);
 		if (!latest || !manifestsEqual(latest.checkpoint.files, state.baseline)) {
-			await persistCheckpoint(pi, state, ctx, "session-start", state.baseline);
+			await persistCheckpoint(pi, state, ctx, "session-start", state.baseline, updateStatus);
 		}
 		updateStatus(ctx);
 	};
@@ -90,13 +99,13 @@ export default function (pi: ExtensionAPI) {
 		if (!isReady(state)) return;
 		try {
 			const current = await scanSourceFiles(state.root, state.config);
-			const latest = checkpointEntries(ctx.sessionManager.getBranch()).at(-1);
+			const latest = checkpointEntries(ctx.sessionManager.getBranch(), state.pruned).at(-1);
 			if (latest && manifestsEqual(latest.checkpoint.files, current)) {
 				state.baseline = current;
 				return;
 			}
 			if (state.baseline && manifestsEqual(state.baseline, current)) return;
-			await persistCheckpoint(pi, state, ctx, "after-agent", current);
+			await persistCheckpoint(pi, state, ctx, "after-agent", current, updateStatus);
 			state.baseline = current;
 			updateStatus(ctx);
 		} catch (error) {
@@ -112,7 +121,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (!ctx.hasUI) return undefined;
 
-		const target = findCheckpointForTarget(ctx.sessionManager, event.preparation.targetId);
+		const target = findCheckpointForTarget(ctx.sessionManager, event.preparation.targetId, state.pruned);
 		if (!target) return undefined;
 
 		try {
@@ -147,7 +156,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const targets = rewindTargets(ctx.sessionManager);
+			const targets = rewindTargets(ctx.sessionManager, state.pruned);
 			const labels = targets.map((target, index) => rewindTargetLabel(index, target));
 			if (state.redo) labels.unshift("Redo last source restore");
 			if (labels.length === 0) {
@@ -219,11 +228,13 @@ function isReady(state: RewindState): state is Required<Pick<RewindState, "root"
 
 async function persistCheckpoint(
 	pi: ExtensionAPI,
-	state: Required<Pick<RewindState, "root" | "blobDirectory" | "config">> & RewindState,
+	state: RewindState,
 	ctx: ExtensionContext,
 	phase: CodeCheckpoint["phase"],
 	files: SourceManifest,
+	updateStatus: (ctx: ExtensionContext) => void,
 ): Promise<void> {
+	if (!isReady(state)) return;
 	await saveManifestBlobs(state.root, state.blobDirectory, files);
 	const checkpoint: CodeCheckpoint = {
 		version: 1,
@@ -233,6 +244,9 @@ async function persistCheckpoint(
 		files,
 	};
 	pi.appendEntry(CHECKPOINT_TYPE, checkpoint);
+
+	// 每个新检查点落库后触发清理：保留最近 retention 个，删除更旧检查点的孤儿 blob。
+	await pruneCheckpoints(state, ctx, updateStatus);
 }
 
 async function restoreWithRedo(
@@ -263,11 +277,14 @@ async function restoreCurrentManifest(
 	}
 }
 
-function rewindTargets(sessionManager: ExtensionContext["sessionManager"]): RewindTarget[] {
+function rewindTargets(
+	sessionManager: ExtensionContext["sessionManager"],
+	pruned?: Set<string>,
+): RewindTarget[] {
 	return sessionManager.getEntries().flatMap((entry) => {
 		if (entry.type !== "message" || entry.message.role !== "user") return [];
 		const checkpoint = entry.parentId
-			? findCheckpointForTarget(sessionManager, entry.parentId)
+			? findCheckpointForTarget(sessionManager, entry.parentId, pruned)
 			: undefined;
 		return [{ entry: entry as UserMessageEntry, checkpoint }];
 	});
@@ -288,9 +305,10 @@ function rewindTargetLabel(index: number, target: RewindTarget): string {
 	return `#${index + 1} ${time} ${preview || "[empty message]"}`;
 }
 
-function checkpointEntries(entries: SessionEntry[]): CheckpointEntry[] {
+function checkpointEntries(entries: SessionEntry[], pruned?: Set<string>): CheckpointEntry[] {
 	return entries.flatMap((entry) => {
 		if (entry.type !== "custom" || entry.customType !== CHECKPOINT_TYPE || !isCodeCheckpoint(entry.data)) return [];
+		if (pruned?.has(entry.id)) return [];
 		return [{ entry: entry as CustomEntry<CodeCheckpoint>, checkpoint: entry.data }];
 	});
 }
@@ -298,8 +316,51 @@ function checkpointEntries(entries: SessionEntry[]): CheckpointEntry[] {
 function findCheckpointForTarget(
 	sessionManager: ExtensionContext["sessionManager"],
 	targetId: string,
+	pruned?: Set<string>,
 ): CheckpointEntry | undefined {
-	return checkpointEntries(sessionManager.getBranch(targetId)).at(-1);
+	return checkpointEntries(sessionManager.getBranch(targetId), pruned).at(-1);
+}
+
+async function loadPruned(file: string): Promise<Set<string>> {
+	try {
+		const parsed = JSON.parse(await readFile(file, "utf8")) as { ids?: string[] };
+		return new Set(Array.isArray(parsed.ids) ? parsed.ids : []);
+	} catch {
+		return new Set();
+	}
+}
+
+async function savePruned(file: string, pruned: Set<string>): Promise<void> {
+	await writeFile(file, JSON.stringify({ ids: [...pruned] }), "utf8");
+}
+
+/** 保留最近 retention 个检查点，将更旧的标记为已清理并删除其不再被引用的孤儿 blob。 */
+async function pruneCheckpoints(
+	state: RewindState,
+	ctx: ExtensionContext,
+	updateStatus: (ctx: ExtensionContext) => void,
+): Promise<void> {
+	if (!state.config || !state.blobDirectory || !state.pruned || !state.prunedFile) return;
+	const retention = state.config.retention;
+	const visible = checkpointEntries(ctx.sessionManager.getBranch(), state.pruned);
+	if (visible.length <= retention) return;
+
+	const toPrune = visible.slice(0, visible.length - retention);
+	for (const checkpoint of toPrune) state.pruned.add(checkpoint.entry.id);
+
+	// 仅保留仍在用的 blob：保留的检查点 + 当前 baseline + redo 快照所引用的 hash。
+	const keep = visible.slice(-retention);
+	const needed = referencedBlobHashes(keep.map((checkpoint) => checkpoint.checkpoint.files));
+	if (state.baseline) referencedBlobHashes([state.baseline]).forEach((hash) => needed.add(hash));
+	if (state.redo) referencedBlobHashes([state.redo]).forEach((hash) => needed.add(hash));
+
+	try {
+		await pruneOrphanedBlobs(state.blobDirectory, needed);
+		await savePruned(state.prunedFile, state.pruned);
+		updateStatus(ctx);
+	} catch (error) {
+		if (ctx.hasUI) ctx.ui.notify(`Code rewind cleanup failed: ${errorMessage(error)}`, "warning");
+	}
 }
 
 function errorMessage(error: unknown): string {

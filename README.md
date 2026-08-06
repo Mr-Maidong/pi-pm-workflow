@@ -120,6 +120,7 @@ main ● 1.2k ↓300 $0.012       DeepSeek V4 Flash  ██████░░░
 - `/rewind` 可选择当前会话分支的 checkpoint,并选择恢复对话与代码、仅代码或仅对话;最近一次成功恢复可 redo。
 - checkpoint 只从目标节点的祖先路径选择,不会按时间戳跨 sibling 分支猜测代码状态。
 - 非交互模式不执行代码恢复。
+- 每个新 checkpoint 落库后自动清理:默认只保留最近 **30** 个检查点,更旧的检查点会被标记为不可回退,其不再被引用的 blob 快照会被删除,避免长会话下磁盘无限增长。
 
 默认只处理 `.ts`、`.tsx`、`.js`、`.jsx`、`.mjs`、`.cjs`、`.py`、`.go`、`.rs`、`.java`、`.kt`、`.cs`、`.vue`、`.svelte`、`.astro`、`.css`、`.scss`、`.less`、`.html`、`.sql`、`.sh`,并排除 `.git`、`node_modules`、`.venv`、`dist`、`build`、`coverage`、Git ignore 文件(`.gitignore`、`.git/info/exclude`) 与常见缓存目录。单文件默认上限为 1 MiB。
 
@@ -130,7 +131,8 @@ main ● 1.2k ↓300 $0.012       DeepSeek V4 Flash  ██████░░░
   "include": ["src", "packages/app"],
   "exclude": ["src/generated"],
   "extensions": [".ts", ".tsx", ".vue"],
-  "maxFileSize": 1048576
+  "maxFileSize": 1048576,
+  "retention": 30
 }
 ```
 

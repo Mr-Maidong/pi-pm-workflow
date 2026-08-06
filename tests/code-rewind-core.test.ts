@@ -1,11 +1,13 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	diffManifests,
+	pruneOrphanedBlobs,
+	referencedBlobHashes,
 	resolveConfig,
 	resolveProjectPath,
 	restoreManifest,
@@ -57,6 +59,28 @@ async function main(): Promise<void> {
 		await assert.rejects(readFile(join(root, "src", "new.ts"), "utf8"));
 		assert.equal(await readFile(join(root, "node_modules", "pkg", "ignored.ts"), "utf8"), "ignored\n");
 		assert.equal(await readFile(join(root, "dist", "ignored.ts"), "utf8"), "ignored\n");
+
+		// retention 配置：默认 30，非法值收敛到至少 1
+		assert.equal(resolveConfig().retention, 30);
+		assert.equal(resolveConfig({ retention: 5 }).retention, 5);
+		assert.equal(resolveConfig({ retention: -3 }).retention, 1);
+
+		// referencedBlobHashes：只收集存在且有 hash 的文件
+		const refs = referencedBlobHashes([
+			{ "a.ts": { exists: true, blobHash: "aaa" }, "gone.ts": { exists: false } },
+		]);
+		assert.deepEqual([...refs].sort(), ["aaa"]);
+
+		// pruneOrphanedBlobs：删除不在 needed 集合中的 blob
+		const blobsDir = join(root, "prune-blobs");
+		await mkdir(blobsDir, { recursive: true });
+		for (const [name, content] of [["aaa", "1"], ["bbb", "2"], ["ccc.tmp", "3"]] as const) {
+			await writeFile(join(blobsDir, name), content);
+		}
+		const deleted = await pruneOrphanedBlobs(blobsDir, new Set(["bbb"]));
+		assert.equal(deleted, 1); // ccc.tmp 被跳过，aaa 被删，bbb 保留
+		const remaining = await readdir(blobsDir);
+		assert.deepEqual(remaining.sort(), ["bbb", "ccc.tmp"]);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
