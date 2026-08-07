@@ -11,8 +11,10 @@ Add a Pi extension that restores source-code files together with the selected co
 - [x] Support source-file creation, modification, deletion, and rename-as-delete-plus-create.
 - [x] Bind each checkpoint to the Pi session-tree custom entry that persists it; resolve targets through the ancestor path rather than timestamps.
 - [x] On `/tree` navigation, show a code restore choice before navigation. Cancellation or restore failure cancels navigation.
-- [ ] Add a dedicated double-Escape restore-mode selector. Current behavior intentionally retains Pi's default double-Escape `/tree`; `/tree` offers conversation-only or conversation-plus-code, while `/rewind` also offers code-only.
-- [ ] Add checkpoint/blob retention and safe pruning.
+- [x] Double-Escape opens the code rewind panel directly (consumes the second Esc so Pi's `/tree` is not triggered).
+- [x] Linear rewind: restoring checkpoint N discards checkpoints after N.
+- [x] Decouple from `/tree` / session tree navigation; rewind only restores source files.
+- [x] Add checkpoint/blob retention and safe pruning.
 
 ## Explicit Non-Goals for v1
 
@@ -52,20 +54,20 @@ Add a Pi extension that restores source-code files together with the selected co
 
 - [x] Resolve target source state from checkpoint entries reachable on the target `entryId` ancestor chain.
 - [ ] Add a Pi integration test for user-message selection semantics, where `/tree` moves the leaf to the user message's parent.
-- [x] Run restore planning and confirmation in `session_before_tree`, using `event.preparation.targetId`.
+- [x] Run restore planning and confirmation from the rewind panel (double-Esc / `/rewind`), not `/tree`.
 - [x] Save the current source manifest and blobs before restore as an in-memory redo state.
 - [x] Show created, modified, and deleted source-file diff summaries before restore.
 - [x] Restore files with sibling temporary files, SHA-256 validation, and atomic rename.
 - [x] Delete only eligible source files absent from the target manifest.
 - [x] On restore failure, attempt to roll back already-applied source files, surface diagnostics, and cancel `/tree` navigation.
-- [x] Allow Pi tree navigation only after a successful restore or an explicit "keep current source files" choice.
+- [x] No longer coupled to Pi tree navigation; rewind only restores source files.
 
 ## Commands And UX
 
 - [x] Add `/rewind` to browse ancestor-reachable checkpoints and preview source diffs.
 - [x] Add restore choices: conversation plus code, code only, conversation only, and cancel.
 - [x] Add redo for the most recent successful source restore during the running extension session.
-- [x] Document and retain Pi's default `doubleEscapeAction` / `/tree` behavior instead of registering a competing shortcut without navigation privileges.
+- [x] Double-Escape opens `/rewind` panel via `onTerminalInput`; no longer depends on `/tree`.
 - [x] Add a compact footer status indicator with checkpoint count and unavailable state.
 - [x] In headless/non-interactive mode, do not execute destructive source restore flows.
 
@@ -94,4 +96,4 @@ Add a Pi extension that restores source-code files together with the selected co
 
 - Use `pi-rewind` as UX and operational reference only: picker, diff preview, redo, checkpoint count, and `/tree` prompting.
 - Do not copy its Git ref/`commit-tree`/`reset --hard` implementation or timestamp-based tree mapping.
-- Use current Pi extension events: `turn_start`, `agent_settled`, `session_before_tree`, `session_tree`, `session_start`, and `session_shutdown`.
+- Use current Pi extension events: `turn_start`, `agent_settled`, `session_start`, and `session_shutdown`; double-Esc via `ui.onTerminalInput`.

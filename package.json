@@ -1,7 +1,7 @@
 {
   "name": "pm-workflow",
-  "version": "1.4.1",
-  "description": "产品经理(PM)工作流包:选项式提问工具(question/questionnaire)+ 上下文状态栏+ 失败重试快捷键+ 源码会话回退+ pm-prototype 原型开发技能。",
+  "version": "1.5.0",
+  "description": "产品经理(PM)工作流包:选项式提问工具(question/questionnaire)+ 上下文状态栏+ 失败重试快捷键+ 源码线性回退(双击Esc)+ pm-prototype 原型开发技能。",
   "keywords": ["pi-package", "pm", "prototype", "question", "questionnaire", "statusline", "rewind", "checkpoint", "grill", "clarify"],
   "license": "MIT",
   "pi": {

@@ -1,14 +1,14 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CustomEntry, SessionEntry } from "@earendil-works/pi-coding-agent/dist/core/session-manager.js";
+import { matchesKey } from "@earendil-works/pi-tui";
 import {
 	CHECKPOINT_TYPE,
 	type CodeCheckpoint,
 	type SourceManifest,
 	changedFileCount,
 	diffManifests,
-	findBestCheckpoint,
 	formatDiffSummary,
 	isCodeCheckpoint,
 	loadConfig,
@@ -22,13 +22,9 @@ import {
 } from "../lib/code-rewind-core.js";
 
 const STATUS_KEY = "code-rewind";
-const RESTORE_CODE = "Restore source files";
-const KEEP_CODE = "Keep current source files";
-const CANCEL_NAVIGATION = "Cancel navigation";
+const DOUBLE_ESCAPE_MS = 500;
 
 type CheckpointEntry = { entry: CustomEntry<CodeCheckpoint>; checkpoint: CodeCheckpoint };
-type UserMessageEntry = Extract<SessionEntry, { type: "message" }>;
-type RewindTarget = { entry: UserMessageEntry; checkpoint?: CheckpointEntry };
 
 interface RewindState {
 	root?: string;
@@ -36,18 +32,109 @@ interface RewindState {
 	config?: ResolvedCodeRewindConfig;
 	baseline?: SourceManifest;
 	redo?: SourceManifest;
-	skipTreeRestoreFor?: string;
 	/** 已被清理、不再可回退的检查点 entry id 集合（持久化到 pruned.json）。 */
 	pruned?: Set<string>;
 	prunedFile?: string;
+	unsubscribeTerminalInput?: () => void;
+	lastEscapeTime?: number;
+	panelOpen?: boolean;
 }
 
 export default function (pi: ExtensionAPI) {
 	const state: RewindState = {};
 
 	const updateStatus = (ctx: ExtensionContext) => {
-		const count = rewindTargets(ctx.sessionManager, state.pruned).length;
+		const count = checkpointEntries(ctx.sessionManager.getBranch(), state.pruned).length;
 		ctx.ui.setStatus(STATUS_KEY, count > 0 ? `Rewind ${count}` : undefined);
+	};
+
+	const openRewindPanel = async (ctx: ExtensionContext): Promise<void> => {
+		if (!ctx.hasUI) return;
+		if (state.panelOpen) return;
+		if (!isReady(state)) {
+			ctx.ui.notify("Code rewind is not available", "warning");
+			return;
+		}
+
+		state.panelOpen = true;
+		try {
+			const targets = checkpointEntries(ctx.sessionManager.getBranch(), state.pruned);
+			const labels = targets.map((target, index) => checkpointLabel(index, target));
+			if (state.redo) labels.unshift("Redo last source restore");
+			if (labels.length === 0) {
+				ctx.ui.notify("No code checkpoints are available", "warning");
+				return;
+			}
+
+			const choice = await ctx.ui.select("Code rewind checkpoint", labels);
+			if (!choice) return;
+			if (choice === "Redo last source restore" && state.redo) {
+				await restoreCurrentManifest(state, ctx, state.redo, "Source files restored to the pre-rewind state");
+				state.redo = undefined;
+				updateStatus(ctx);
+				return;
+			}
+
+			const offset = state.redo ? 1 : 0;
+			const target = targets[labels.indexOf(choice) - offset];
+			if (!target) return;
+
+			try {
+				const current = await scanSourceFiles(state.root, state.config);
+				const diff = diffManifests(current, target.checkpoint.files);
+				if (changedFileCount(diff) > 0) {
+					const proceed = await ctx.ui.confirm(
+						`Source files that would be restored:\n${formatDiffSummary(diff)}`,
+						"Restore source files to this checkpoint?",
+					);
+					if (!proceed) return;
+				} else {
+					ctx.ui.notify("Source files already match this checkpoint", "info");
+					// 即使无差异，仍截断后续检查点，保持线性回退语义。
+				}
+			} catch (error) {
+				ctx.ui.notify(`Code rewind could not scan source files: ${errorMessage(error)}`, "error");
+				return;
+			}
+
+			const restored = await restoreCurrentManifest(
+				state,
+				ctx,
+				target.checkpoint.files,
+				`Source files restored to #${labels.indexOf(choice) - offset + 1}`,
+			);
+			if (!restored) return;
+
+			// 恢复到序号 N 后，丢弃 N 之后的检查点，使其不可再回退。
+			await discardCheckpointsAfter(state, ctx, target.entry.id, updateStatus);
+			updateStatus(ctx);
+		} finally {
+			state.panelOpen = false;
+		}
+	};
+
+	const setupDoubleEscape = (ctx: ExtensionContext): void => {
+		state.unsubscribeTerminalInput?.();
+		state.unsubscribeTerminalInput = undefined;
+		state.lastEscapeTime = 0;
+		if (!ctx.hasUI || ctx.mode !== "tui") return;
+
+		state.unsubscribeTerminalInput = ctx.ui.onTerminalInput((data) => {
+			if (!matchesKey(data, "escape")) return;
+			if (state.panelOpen) return;
+			if (!ctx.isIdle()) return;
+			if (ctx.ui.getEditorText().trim()) return;
+
+			const now = Date.now();
+			if (state.lastEscapeTime && now - state.lastEscapeTime < DOUBLE_ESCAPE_MS) {
+				state.lastEscapeTime = 0;
+				// 吞掉第二次 Esc，避免触发 Pi 内置的 /tree 双击行为。
+				void openRewindPanel(ctx);
+				return { consume: true };
+			}
+			state.lastEscapeTime = now;
+			return;
+		});
 	};
 
 	const initialize = async (ctx: ExtensionContext): Promise<void> => {
@@ -72,6 +159,7 @@ export default function (pi: ExtensionAPI) {
 		if (!latest || !manifestsEqual(latest.checkpoint.files, state.baseline)) {
 			await persistCheckpoint(pi, state, ctx, "session-start", state.baseline, updateStatus);
 		}
+		setupDoubleEscape(ctx);
 		updateStatus(ctx);
 	};
 
@@ -82,9 +170,16 @@ export default function (pi: ExtensionAPI) {
 			state.root = undefined;
 			state.config = undefined;
 			state.baseline = undefined;
+			state.unsubscribeTerminalInput?.();
+			state.unsubscribeTerminalInput = undefined;
 			ctx.ui.setStatus(STATUS_KEY, "rewind unavailable");
 			if (ctx.hasUI) ctx.ui.notify(`Code rewind disabled: ${errorMessage(error)}`, "warning");
 		}
+	});
+
+	pi.on("session_shutdown", async () => {
+		state.unsubscribeTerminalInput?.();
+		state.unsubscribeTerminalInput = undefined;
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
@@ -108,119 +203,20 @@ export default function (pi: ExtensionAPI) {
 			if (state.baseline && manifestsEqual(state.baseline, current)) return;
 			await persistCheckpoint(pi, state, ctx, "after-agent", current, updateStatus);
 			state.baseline = current;
+			// 新检查点产生后，旧的 redo 快照不再有意义。
+			state.redo = undefined;
 			updateStatus(ctx);
 		} catch (error) {
 			if (ctx.hasUI) ctx.ui.notify(`Code checkpoint failed: ${errorMessage(error)}`, "warning");
 		}
 	});
 
-	pi.on("session_before_tree", async (event, ctx) => {
-		if (!isReady(state)) return undefined;
-		if (state.skipTreeRestoreFor === event.preparation.targetId) {
-			state.skipTreeRestoreFor = undefined;
-			return undefined;
-		}
-		if (!ctx.hasUI) return undefined;
-
-		const target = findCheckpointForTarget(ctx.sessionManager, event.preparation.targetId, state.pruned);
-		if (!target) return undefined;
-
-		try {
-			const current = await scanSourceFiles(state.root, state.config);
-			const diff = diffManifests(current, target.checkpoint.files);
-			if (changedFileCount(diff) === 0) return undefined;
-
-			const summary = formatDiffSummary(diff);
-			const choice = await ctx.ui.select(
-				`Source files differ at the selected conversation point:\n${summary}`,
-				[RESTORE_CODE, KEEP_CODE, CANCEL_NAVIGATION],
-			);
-			if (!choice || choice === CANCEL_NAVIGATION) return { cancel: true };
-			if (choice === KEEP_CODE) return undefined;
-
-			await restoreWithRedo(state, current, target.checkpoint.files);
-			state.baseline = target.checkpoint.files;
-			ctx.ui.notify("Source files restored for the selected conversation point", "info");
-			return undefined;
-		} catch (error) {
-			ctx.ui.notify(`Source restore failed: ${errorMessage(error)}`, "error");
-			return { cancel: true };
-		}
-	});
-
 	pi.registerCommand("rewind", {
-		description: "Restore source files and optionally navigate to a checkpoint",
+		description: "Restore source files to a previous code checkpoint",
 		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) return;
-			if (!isReady(state)) {
-				ctx.ui.notify("Code rewind is not available", "warning");
-				return;
-			}
-
-			const targets = rewindTargets(ctx.sessionManager, state.pruned);
-			const labels = targets.map((target, index) => rewindTargetLabel(index, target));
-			if (state.redo) labels.unshift("Redo last source restore");
-			if (labels.length === 0) {
-				ctx.ui.notify("No code checkpoints are available", "warning");
-				return;
-			}
-
-			const choice = await ctx.ui.select("Code rewind checkpoint", labels);
-			if (!choice) return;
-			if (choice === "Redo last source restore" && state.redo) {
-				await restoreCurrentManifest(state, ctx, state.redo, "Source files restored to the pre-rewind state");
-				state.redo = undefined;
-				return;
-			}
-
-			const offset = state.redo ? 1 : 0;
-			const target = targets[labels.indexOf(choice) - offset];
-			if (!target) return;
-
-			if (target.checkpoint) {
-				try {
-					const current = await scanSourceFiles(state.root, state.config);
-					const diff = diffManifests(current, target.checkpoint.checkpoint.files);
-					if (changedFileCount(diff) > 0) {
-						const proceed = await ctx.ui.confirm(
-							`Source files that would be restored:\n${formatDiffSummary(diff)}`,
-							"Continue to restore options?",
-						);
-						if (!proceed) return;
-					}
-				} catch (error) {
-					ctx.ui.notify(`Code rewind could not scan source files: ${errorMessage(error)}`, "error");
-					return;
-				}
-			}
-
-			const mode = await ctx.ui.select(
-				"Rewind mode",
-				target.checkpoint
-					? [
-						"Restore conversation and source files",
-						"Restore source files only",
-						"Restore conversation only",
-						"Cancel",
-					]
-					: ["Restore conversation only", "Cancel"],
-			);
-			if (!mode || mode === "Cancel") return;
-
-			if (target.checkpoint && mode !== "Restore conversation only") {
-				const restored = await restoreCurrentManifest(state, ctx, target.checkpoint.checkpoint.files, "Source files restored");
-				if (!restored) return;
-			}
-			if (mode !== "Restore source files only") {
-				state.skipTreeRestoreFor = target.entry.id;
-				await ctx.navigateTree(target.entry.id, { summarize: true });
-			}
+			await openRewindPanel(ctx);
 		},
 	});
-
-	// Keep Pi's built-in double-Escape /tree behavior. session_before_tree supplies
-	// the restore/keep/cancel choice before navigation, so this extension does not
-	// register a competing shortcut without navigation privileges.
 }
 
 function isReady(state: RewindState): state is Required<Pick<RewindState, "root" | "blobDirectory" | "config">> & RewindState {
@@ -262,7 +258,7 @@ async function restoreWithRedo(
 
 async function restoreCurrentManifest(
 	state: Required<Pick<RewindState, "root" | "blobDirectory" | "config">> & RewindState,
-	ctx: ExtensionCommandContext,
+	ctx: ExtensionContext,
 	target: SourceManifest,
 	successMessage: string,
 ): Promise<boolean> {
@@ -278,32 +274,11 @@ async function restoreCurrentManifest(
 	}
 }
 
-function rewindTargets(
-	sessionManager: ExtensionContext["sessionManager"],
-	pruned?: Set<string>,
-): RewindTarget[] {
-	return sessionManager.getEntries().flatMap((entry) => {
-		if (entry.type !== "message" || entry.message.role !== "user") return [];
-		// 检查点 cpN 挂在 userN 的 assistant 回复之下，是 userN 的后代；
-		// 因此以用户消息自身为锚向下找第一个检查点，才能对应当前这一轮。
-		const checkpoint = findCheckpointForTarget(sessionManager, entry.id, pruned);
-		return [{ entry: entry as UserMessageEntry, checkpoint }];
-	});
-}
-
-function userMessageText(entry: UserMessageEntry): string {
-	const content = entry.message.content;
-	const text = typeof content === "string"
-		? content
-		: content.map((part) => part.type === "text" ? part.text : "[image]").join(" ");
-	return text.replace(/\s+/g, " ").trim();
-}
-
-function rewindTargetLabel(index: number, target: RewindTarget): string {
-	const time = new Date(target.entry.timestamp).toLocaleTimeString();
-	const prompt = userMessageText(target.entry);
-	const preview = prompt.length > 72 ? `${prompt.slice(0, 71)}…` : prompt;
-	return `#${index + 1} ${time} ${preview || "[empty message]"}`;
+function checkpointLabel(index: number, target: CheckpointEntry): string {
+	const time = new Date(target.checkpoint.timestamp).toLocaleTimeString();
+	const phase = target.checkpoint.phase === "session-start" ? "session start" : "after agent";
+	const fileCount = Object.keys(target.checkpoint.files).length;
+	return `#${index + 1} ${time} ${phase} (${fileCount} files)`;
 }
 
 function checkpointEntries(entries: SessionEntry[], pruned?: Set<string>): CheckpointEntry[] {
@@ -312,22 +287,6 @@ function checkpointEntries(entries: SessionEntry[], pruned?: Set<string>): Check
 		if (pruned?.has(entry.id)) return [];
 		return [{ entry: entry as CustomEntry<CodeCheckpoint>, checkpoint: entry.data }];
 	});
-}
-
-function findCheckpointForTarget(
-	sessionManager: ExtensionContext["sessionManager"],
-	targetId: string,
-	pruned?: Set<string>,
-): CheckpointEntry | undefined {
-	if (!targetId) return undefined;
-	const found = findBestCheckpoint(
-		sessionManager.getEntries(),
-		targetId,
-		(entry) => entry.type === "custom" && entry.customType === CHECKPOINT_TYPE && isCodeCheckpoint(entry.data),
-		pruned,
-	);
-	if (!found || found.type !== "custom") return undefined;
-	return { entry: found as CustomEntry<CodeCheckpoint>, checkpoint: found.data as CodeCheckpoint };
 }
 
 async function loadPruned(file: string): Promise<Set<string>> {
@@ -341,6 +300,43 @@ async function loadPruned(file: string): Promise<Set<string>> {
 
 async function savePruned(file: string, pruned: Set<string>): Promise<void> {
 	await writeFile(file, JSON.stringify({ ids: [...pruned] }), "utf8");
+}
+
+/** 恢复到某个检查点后，丢弃其后的全部检查点（线性回退，不可再前进到被丢弃的序号）。 */
+async function discardCheckpointsAfter(
+	state: RewindState,
+	ctx: ExtensionContext,
+	keptCheckpointId: string,
+	updateStatus: (ctx: ExtensionContext) => void,
+): Promise<void> {
+	if (!state.config || !state.blobDirectory || !state.pruned || !state.prunedFile) return;
+	const visible = checkpointEntries(ctx.sessionManager.getBranch(), state.pruned);
+	const keepIndex = visible.findIndex((checkpoint) => checkpoint.entry.id === keptCheckpointId);
+	if (keepIndex < 0) return;
+
+	const toKeep = visible.slice(0, keepIndex + 1);
+	const toPrune = visible.slice(keepIndex + 1);
+	if (toPrune.length === 0) {
+		updateStatus(ctx);
+		return;
+	}
+
+	for (const checkpoint of toPrune) state.pruned.add(checkpoint.entry.id);
+
+	const needed = referencedBlobHashes(toKeep.map((checkpoint) => checkpoint.checkpoint.files));
+	if (state.baseline) referencedBlobHashes([state.baseline]).forEach((hash) => needed.add(hash));
+	if (state.redo) referencedBlobHashes([state.redo]).forEach((hash) => needed.add(hash));
+
+	try {
+		await pruneOrphanedBlobs(state.blobDirectory, needed);
+		await savePruned(state.prunedFile, state.pruned);
+		updateStatus(ctx);
+		if (ctx.hasUI) {
+			ctx.ui.notify(`Discarded ${toPrune.length} later checkpoint${toPrune.length === 1 ? "" : "s"}`, "info");
+		}
+	} catch (error) {
+		if (ctx.hasUI) ctx.ui.notify(`Code rewind cleanup failed: ${errorMessage(error)}`, "warning");
+	}
 }
 
 /** 保留最近 retention 个检查点，将更旧的标记为已清理并删除其不再被引用的孤儿 blob。 */
