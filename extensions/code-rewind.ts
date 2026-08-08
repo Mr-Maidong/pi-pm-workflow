@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CustomEntry, SessionEntry } from "@earendil-works/pi-coding-agent/dist/core/session-manager.js";
 import { matchesKey } from "@earendil-works/pi-tui";
 import {
@@ -31,7 +31,6 @@ interface RewindState {
 	blobDirectory?: string;
 	config?: ResolvedCodeRewindConfig;
 	baseline?: SourceManifest;
-	redo?: SourceManifest;
 	/** 已被清理、不再可回退的检查点 entry id 集合（持久化到 pruned.json）。 */
 	pruned?: Set<string>;
 	prunedFile?: string;
@@ -48,7 +47,7 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setStatus(STATUS_KEY, count > 0 ? `Rewind ${count}` : undefined);
 	};
 
-	const openRewindPanel = async (ctx: ExtensionContext): Promise<void> => {
+	const openRewindPanel = async (ctx: ExtensionContext, preferConversation = false): Promise<void> => {
 		if (!ctx.hasUI) return;
 		if (state.panelOpen) return;
 		if (!isReady(state)) {
@@ -58,9 +57,9 @@ export default function (pi: ExtensionAPI) {
 
 		state.panelOpen = true;
 		try {
-			const targets = checkpointEntries(ctx.sessionManager.getBranch(), state.pruned);
-			const labels = targets.map((target, index) => checkpointLabel(index, target));
-			if (state.redo) labels.unshift("Redo last source restore");
+			const branch = ctx.sessionManager.getBranch();
+			const targets = checkpointEntries(branch, state.pruned);
+			const labels = targets.map((target, index) => checkpointLabel(index, target, branch));
 			if (labels.length === 0) {
 				ctx.ui.notify("No code checkpoints are available", "warning");
 				return;
@@ -68,15 +67,8 @@ export default function (pi: ExtensionAPI) {
 
 			const choice = await ctx.ui.select("Code rewind checkpoint", labels);
 			if (!choice) return;
-			if (choice === "Redo last source restore" && state.redo) {
-				await restoreCurrentManifest(state, ctx, state.redo, "Source files restored to the pre-rewind state");
-				state.redo = undefined;
-				updateStatus(ctx);
-				return;
-			}
 
-			const offset = state.redo ? 1 : 0;
-			const target = targets[labels.indexOf(choice) - offset];
+			const target = targets[labels.indexOf(choice)];
 			if (!target) return;
 
 			try {
@@ -97,16 +89,57 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
+			const index = labels.indexOf(choice);
+			const canNavigate = hasNavigateTree(ctx);
+			// navigateTree 仅在命令上下文可用。双击 Esc 通过 /rewind conversation 走命令上下文，
+			// 直接同时回退代码与对话；手动 /rewind 不带参数时才询问模式。
+			let restoreConversation = false;
+			if (canNavigate) {
+				if (preferConversation) {
+					restoreConversation = true;
+				} else {
+					const mode = await ctx.ui.select("Rewind mode", [
+						"Conversation + code",
+						"Code only",
+					]);
+					if (!mode) return;
+					restoreConversation = mode === "Conversation + code";
+				}
+			}
+
 			const restored = await restoreCurrentManifest(
 				state,
 				ctx,
 				target.checkpoint.files,
-				`Source files restored to #${labels.indexOf(choice) - offset + 1}`,
+				// 若还会回退对话，成功文案由 navigateTree 之后统一给出。
+				restoreConversation ? undefined : `Source files restored to #${index + 1}`,
 			);
 			if (!restored) return;
 
-			// 恢复到序号 N 后，丢弃 N 之后的检查点，使其不可再回退。
+			// 先丢弃后续检查点（仍在当前 branch 上），再 navigateTree，
+			// 否则对话回退后 getBranch() 不再包含这些检查点。
 			await discardCheckpointsAfter(state, ctx, target.entry.id, updateStatus);
+
+			if (restoreConversation && canNavigate) {
+				try {
+					// 导航到检查点 entry 本身，保证该检查点仍在活跃 branch 上。
+					const nav = await ctx.navigateTree(target.entry.id, { summarize: false });
+					if (nav.cancelled) {
+						ctx.ui.notify(
+							`Code restored to #${index + 1}, but conversation rewind was cancelled`,
+							"warning",
+						);
+					} else {
+						ctx.ui.notify(`Conversation + code restored to #${index + 1}`, "info");
+					}
+				} catch (error) {
+					ctx.ui.notify(
+						`Code restored to #${index + 1}, but conversation rewind failed: ${errorMessage(error)}`,
+						"warning",
+					);
+				}
+			}
+
 			updateStatus(ctx);
 		} finally {
 			state.panelOpen = false;
@@ -128,9 +161,10 @@ export default function (pi: ExtensionAPI) {
 			const now = Date.now();
 			if (state.lastEscapeTime && now - state.lastEscapeTime < DOUBLE_ESCAPE_MS) {
 				state.lastEscapeTime = 0;
-				// 吞掉第二次 Esc，避免触发 Pi 内置的 /tree 双击行为。
-				void openRewindPanel(ctx);
-				return { consume: true };
+				// 双击 Esc：把第二次 Esc 改写为提交 /rewind conversation 命令，走命令上下文，
+				// 从而能通过 navigateTree 同时回退代码与对话；同时避免触发 Pi 内置的 /tree 双击行为。
+				ctx.ui.setEditorText("/rewind conversation");
+				return { data: "\r" };
 			}
 			state.lastEscapeTime = now;
 			return;
@@ -182,7 +216,10 @@ export default function (pi: ExtensionAPI) {
 		state.unsubscribeTerminalInput = undefined;
 	});
 
-	pi.on("turn_start", async (_event, ctx) => {
+	// 在整次 agent run 开始时拍 baseline，而不是每个 turn_start。
+	// 多轮 tool 调用里 turn_start 会反复把 baseline 推到“已改动后”的状态，
+	// 导致 agent_settled 误判无变化、检查点要等 /reload 才出现。
+	pi.on("agent_start", async (_event, ctx) => {
 		if (!isReady(state)) return;
 		try {
 			state.baseline = await scanSourceFiles(state.root, state.config);
@@ -196,15 +233,13 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const current = await scanSourceFiles(state.root, state.config);
 			const latest = checkpointEntries(ctx.sessionManager.getBranch(), state.pruned).at(-1);
+			// 只与最近检查点比较：只要落盘状态变了就建点，不依赖可能被多轮 turn 污染的 baseline。
 			if (latest && manifestsEqual(latest.checkpoint.files, current)) {
 				state.baseline = current;
 				return;
 			}
-			if (state.baseline && manifestsEqual(state.baseline, current)) return;
 			await persistCheckpoint(pi, state, ctx, "after-agent", current, updateStatus);
 			state.baseline = current;
-			// 新检查点产生后，旧的 redo 快照不再有意义。
-			state.redo = undefined;
 			updateStatus(ctx);
 		} catch (error) {
 			if (ctx.hasUI) ctx.ui.notify(`Code checkpoint failed: ${errorMessage(error)}`, "warning");
@@ -212,11 +247,18 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("rewind", {
-		description: "Restore source files to a previous code checkpoint",
-		handler: async (_args, ctx) => {
-			await openRewindPanel(ctx);
+		description: "Restore source files and optionally conversation to a previous checkpoint",
+		handler: async (args, ctx) => {
+			// 双击 Esc 注入 /rewind conversation：直接同时回退代码与对话；
+			// 手动 /rewind 不带参数时仍询问模式。
+			const preferConversation = args.trim().toLowerCase() === "conversation";
+			await openRewindPanel(ctx, preferConversation);
 		},
 	});
+}
+
+function hasNavigateTree(ctx: ExtensionContext): ctx is ExtensionCommandContext {
+	return typeof (ctx as ExtensionCommandContext).navigateTree === "function";
 }
 
 function isReady(state: RewindState): state is Required<Pick<RewindState, "root" | "blobDirectory" | "config">> & RewindState {
@@ -246,27 +288,19 @@ async function persistCheckpoint(
 	await pruneCheckpoints(state, ctx, updateStatus);
 }
 
-async function restoreWithRedo(
-	state: Required<Pick<RewindState, "root" | "blobDirectory" | "config">> & RewindState,
-	current: SourceManifest,
-	target: SourceManifest,
-): Promise<void> {
-	await saveManifestBlobs(state.root, state.blobDirectory, current);
-	await restoreManifest(state.root, state.blobDirectory, current, target, state.config);
-	state.redo = current;
-}
-
 async function restoreCurrentManifest(
 	state: Required<Pick<RewindState, "root" | "blobDirectory" | "config">> & RewindState,
 	ctx: ExtensionContext,
 	target: SourceManifest,
-	successMessage: string,
+	successMessage?: string,
 ): Promise<boolean> {
 	try {
 		const current = await scanSourceFiles(state.root, state.config);
-		await restoreWithRedo(state, current, target);
+		// 先把当前内容写入 blob，供 restoreManifest 失败时回滚已改动的文件。
+		await saveManifestBlobs(state.root, state.blobDirectory, current);
+		await restoreManifest(state.root, state.blobDirectory, current, target, state.config);
 		state.baseline = target;
-		ctx.ui.notify(successMessage, "info");
+		if (successMessage) ctx.ui.notify(successMessage, "info");
 		return true;
 	} catch (error) {
 		ctx.ui.notify(`Source restore failed: ${errorMessage(error)}`, "error");
@@ -274,11 +308,42 @@ async function restoreCurrentManifest(
 	}
 }
 
-function checkpointLabel(index: number, target: CheckpointEntry): string {
+type UserMessageEntry = Extract<SessionEntry, { type: "message" }>;
+
+function userMessageText(entry: UserMessageEntry): string {
+	const content = entry.message.content;
+	const text = typeof content === "string"
+		? content
+		: content.map((part) => (part.type === "text" ? part.text : "[image]")).join(" ");
+	return text.replace(/\s+/g, " ").trim();
+}
+
+/** 从 checkpoint 在 branch 上的位置向前找最近的用户消息，作为可读名称。 */
+function precedingUserMessage(branch: SessionEntry[], checkpointId: string): UserMessageEntry | undefined {
+	const index = branch.findIndex((entry) => entry.id === checkpointId);
+	const end = index >= 0 ? index : branch.length;
+	for (let i = end - 1; i >= 0; i--) {
+		const entry = branch[i];
+		if (entry.type === "message" && entry.message.role === "user") {
+			return entry as UserMessageEntry;
+		}
+	}
+	return undefined;
+}
+
+function checkpointLabel(index: number, target: CheckpointEntry, branch: SessionEntry[]): string {
 	const time = new Date(target.checkpoint.timestamp).toLocaleTimeString();
-	const phase = target.checkpoint.phase === "session-start" ? "session start" : "after agent";
 	const fileCount = Object.keys(target.checkpoint.files).length;
-	return `#${index + 1} ${time} ${phase} (${fileCount} files)`;
+	const user = precedingUserMessage(branch, target.entry.id);
+	const prompt = user ? userMessageText(user) : "";
+	const name = prompt
+		? prompt.length > 72
+			? `${prompt.slice(0, 71)}…`
+			: prompt
+		: target.checkpoint.phase === "session-start"
+			? "session start"
+			: "after agent";
+	return `#${index + 1} ${time} ${name} (${fileCount} files)`;
 }
 
 function checkpointEntries(entries: SessionEntry[], pruned?: Set<string>): CheckpointEntry[] {
@@ -325,7 +390,6 @@ async function discardCheckpointsAfter(
 
 	const needed = referencedBlobHashes(toKeep.map((checkpoint) => checkpoint.checkpoint.files));
 	if (state.baseline) referencedBlobHashes([state.baseline]).forEach((hash) => needed.add(hash));
-	if (state.redo) referencedBlobHashes([state.redo]).forEach((hash) => needed.add(hash));
 
 	try {
 		await pruneOrphanedBlobs(state.blobDirectory, needed);
@@ -353,11 +417,10 @@ async function pruneCheckpoints(
 	const toPrune = visible.slice(0, visible.length - retention);
 	for (const checkpoint of toPrune) state.pruned.add(checkpoint.entry.id);
 
-	// 仅保留仍在用的 blob：保留的检查点 + 当前 baseline + redo 快照所引用的 hash。
+	// 仅保留仍在用的 blob：保留的检查点 + 当前 baseline 所引用的 hash。
 	const keep = visible.slice(-retention);
 	const needed = referencedBlobHashes(keep.map((checkpoint) => checkpoint.checkpoint.files));
 	if (state.baseline) referencedBlobHashes([state.baseline]).forEach((hash) => needed.add(hash));
-	if (state.redo) referencedBlobHashes([state.redo]).forEach((hash) => needed.add(hash));
 
 	try {
 		await pruneOrphanedBlobs(state.blobDirectory, needed);
