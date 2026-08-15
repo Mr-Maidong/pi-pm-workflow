@@ -113,18 +113,17 @@ export default function (pi: ExtensionAPI) {
 				},
 
 				render(width: number): string[] {
-					// ---- 左侧：当前工作目录 + git 分支 + 其它扩展状态 ----
-					const leftParts: string[] = [];
+					const lines: string[] = [];
+
+					// ---- 第一行左侧：当前工作目录 + git 分支 ----
+					const mainParts: string[] = [];
 
 					// 仅显示当前工作目录最后一级，并将首字母大写。
 					const cwd = ctx.sessionManager.getCwd();
 					const directoryName = basename(cwd) || cwd;
 					const cwdDisplay = directoryName.charAt(0).toUpperCase() + directoryName.slice(1);
-					leftParts.push(theme.fg("muted", cwdDisplay));
+					mainParts.push(theme.fg("muted", cwdDisplay));
 
-					for (const text of footerData.getExtensionStatuses().values()) {
-						if (text) leftParts.push(text);
-					}
 					const branch = footerData.getGitBranch();
 					if (branch) {
 						// 首字母大写，并用 accent 色显示；未提交行数按新增/删除显示。
@@ -132,9 +131,9 @@ export default function (pi: ExtensionAPI) {
 						const changes = gitChangeSummary
 							? ` ${theme.fg("success", gitChangeSummary.split("/")[0])}${theme.fg("dim", "/")}${theme.fg("error", gitChangeSummary.split("/")[1])}`
 							: "";
-						leftParts.push(`${theme.fg("accent", capitalized)}${changes}`);
+						mainParts.push(`${theme.fg("accent", capitalized)}${changes}`);
 					}
-					const left = leftParts.join(theme.fg("dim", " │ "));
+					const left = mainParts.join(theme.fg("dim", " │ "));
 
 					// ---- 右侧：模型名 + 上下文进度条 + 百分比 ----
 					const model = ctx.model;
@@ -157,11 +156,20 @@ export default function (pi: ExtensionAPI) {
 						right = `${theme.fg("accent", modelName)}  ${theme.fg("dim", "---------- --%")}`;
 					}
 
-					// ---- 左右对齐拼接 ----
+					// ---- 第一行：左右对齐拼接 ----
 					const gap = Math.max(2, width - visibleWidth(left) - visibleWidth(right));
 					const line = left + " ".repeat(gap) + right;
+					lines.push(truncateToWidth(line, width));
+
+					// ---- 第二行：其它扩展 setStatus() 状态单独展示（如有）----
+					const extStatuses = [...footerData.getExtensionStatuses().values()].filter(Boolean);
+					if (extStatuses.length > 0) {
+						lines.push(truncateToWidth(extStatuses.join(theme.fg("dim", " │ ")), width));
+					}
+
 					// 末尾追加一个空行作为下边距,避免状态栏过于贴近终端底部。
-					return [truncateToWidth(line, width), ""];
+					lines.push("");
+					return lines;
 				},
 			};
 		});
