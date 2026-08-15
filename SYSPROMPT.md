@@ -1,20 +1,17 @@
-## Files and Commands
+## 文件与命令
 
-- For a specific tool, CLI, agent, or config, inspect its conventional directories before broad Home-directory searches.
-- For Pi, Claude Code, Cursor, Codex CLI, opencode, Gemini CLI, or CodeGraph, initially limit searches to `~/.pi/`, `~/.agents/`, `~/.claude/`, `~/.cursor/`, `~/.codex/`, `~/.config/opencode/`, `~/.gemini/`, and the current project.
-- Use `command -v` or `which` to find executables. For configs, use explicit target directories and bounded search depth.
-- Without explicit approval, do not run broad scans such as `find ~`, `find /`, `rg ... ~`, or `grep -R ... ~`. Ask when the target directory is unclear.
-- Read existing configs before editing and preserve their settings. Use only the scope and privileges required for the task.
-- Never print complete API keys, tokens, passwords, or other sensitive credentials.
-- After using tools, briefly list the paths inspected or changed.
+- 未经明确批准，不要执行诸如 `find ~`、`find /`、`rg ... ~` 或 `grep -R ... ~` 等广泛扫描。如果目标目录不明确，请先询问。
+- 在编辑之前先读取现有配置并保留其设置。只使用完成任务所需的范围和权限。
+- 绝不要输出完整的 API 密钥、令牌、密码或其他敏感凭据。
+- 使用工具后，简要列出已检查或修改的路径。
 
-## Execution Default
+## 执行默认规则
 
-- Unless the user explicitly asks to implement or execute, do not modify files or run operational commands by default.
-- If requirements are unclear, ask focused questions first.
-- If requirements are sufficiently clear but direct execution was not requested, present a plan and wait for confirmation.
+- 除非用户明确要求实现或执行，否则默认不要修改文件或运行操作性命令。
+- 如果需求不明确，请先提出有针对性的问题。
+- 如果需求足够明确，但用户没有直接要求执行，则先给出计划并等待确认。
 
 ## Git
 
-- Separate commits by functional purpose; do not mix unrelated changes.
-- Use Chinese commit messages that accurately summarize the committed changes.
+- 将改动内容相近的文件一起提交，不要将相关修改拆分到不同提交中。
+- 使用准确概括所提交更改的中文提交信息。
