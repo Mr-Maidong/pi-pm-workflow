@@ -16,6 +16,31 @@ watch(open, (v) => {
   else window.removeEventListener('keydown', onKeydown)
 })
 onUnmounted(() => window.removeEventListener('keydown', onKeydown))
+
+/**
+ * 零依赖 Markdown → HTML 渲染
+ * 支持：双换行分段、**粗体**、- 列表
+ */
+function renderSpec(text) {
+  if (!text) return ''
+  return text
+    .split(/\n\n+/)
+    .map((para) => {
+      const lines = para.split('\n')
+      // 以 - 开头的连续行 → <ul>
+      if (lines.every((l) => /^-\s/.test(l) || l === '')) {
+        const items = lines
+          .filter((l) => /^-\s/.test(l))
+          .map((l) => `<li>${l.replace(/^-\s/, '')}</li>`)
+          .join('')
+        return `<ul>${items}</ul>`
+      }
+      // **粗体**
+      const bold = para.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      return `<p>${bold}</p>`
+    })
+    .join('')
+}
 </script>
 
 <template>
@@ -39,19 +64,19 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           <div class="module-spec-body">
             <section v-if="spec.goal">
               <h4>模块目标</h4>
-              <p>{{ spec.goal }}</p>
+              <div v-html="renderSpec(spec.goal)"></div>
             </section>
             <section v-if="spec.interaction">
               <h4>交互说明</h4>
-              <p>{{ spec.interaction }}</p>
+              <div v-html="renderSpec(spec.interaction)"></div>
             </section>
             <section v-if="spec.data">
               <h4>数据说明</h4>
-              <p>{{ spec.data }}</p>
+              <div v-html="renderSpec(spec.data)"></div>
             </section>
             <section v-if="spec.notes">
               <h4>边界与备注</h4>
-              <p>{{ spec.notes }}</p>
+              <div v-html="renderSpec(spec.notes)"></div>
             </section>
           </div>
         </div>
